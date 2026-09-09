@@ -8,10 +8,11 @@
   const { findByProps } = V.metro;
   const KEY = "ITS_TRIPLE_SIX_PURGE_TOOLS_SHIGGY";
   const OLD_KEY = "ITS_TRIPLE_SIX_PURGE_TOOLS";
+
   let unpatch = null;
-  let retryTimer = null;
+  let delayedStart = null;
+  let cleanupTimer = null;
   let settingConstants = null;
-  let installed = false;
 
   function find(...props) {
     try { return findByProps?.(...props); } catch { return undefined; }
@@ -33,9 +34,7 @@
     try {
       const id = purgePluginId();
       const Settings = id ? V.plugins?.getSettings?.(id) : null;
-      if (!id || typeof Settings !== "function") {
-        throw new Error("Purge Tools settings are not available yet");
-      }
+      if (!id || typeof Settings !== "function") throw new Error("Purge Tools settings are not available yet");
 
       const rootNavigation = find("getRootNavigationRef");
       const navigation = rootNavigation?.getRootNavigationRef?.();
@@ -50,8 +49,50 @@
     }
   }
 
+  function removeOldConfig() {
+    try {
+      settingConstants = settingConstants ?? find("SETTING_RENDERER_CONFIG");
+      const current = settingConstants?.SETTING_RENDERER_CONFIG ?? {};
+      if (!current[OLD_KEY]) return;
+      const next = { ...current };
+      delete next[OLD_KEY];
+      settingConstants.SETTING_RENDERER_CONFIG = next;
+    } catch {}
+  }
+
+  function cleanSections(sections) {
+    if (!Array.isArray(sections)) return;
+
+    let shiggySection = null;
+    for (const section of sections) {
+      if (!Array.isArray(section?.settings)) continue;
+      section.settings = section.settings.filter(key => key !== OLD_KEY);
+      if (
+        section.settings.includes("SHIGGYCORD")
+        || section.settings.includes("BUNNY_PLUGINS")
+        || section?.label === "ShiggyCord"
+        || section?.title === "ShiggyCord"
+      ) shiggySection = shiggySection ?? section;
+    }
+
+    for (let i = sections.length - 1; i >= 0; i -= 1) {
+      const section = sections[i];
+      if (
+        Array.isArray(section?.settings)
+        && section.settings.length === 0
+        && (section?.label === "Revenge" || section?.title === "Revenge")
+      ) sections.splice(i, 1);
+    }
+
+    if (!shiggySection || shiggySection.settings.includes(KEY)) return;
+    const pluginsIndex = shiggySection.settings.indexOf("BUNNY_PLUGINS");
+    const shiggyIndex = shiggySection.settings.indexOf("SHIGGYCORD");
+    const insertAt = pluginsIndex >= 0 ? pluginsIndex + 1 : shiggyIndex >= 0 ? shiggyIndex + 1 : shiggySection.settings.length;
+    shiggySection.settings.splice(insertAt, 0, KEY);
+  }
+
   function install() {
-    if (installed) return true;
+    if (unpatch) return true;
 
     settingConstants = find("SETTING_RENDERER_CONFIG");
     const createListModule = find("createList");
@@ -59,6 +100,8 @@
 
     const icon = V.ui?.assets?.getAssetIDByName?.("TrashIcon")
       ?? V.ui?.assets?.getAssetIDByName?.("DeleteIcon");
+
+    removeOldConfig();
 
     try {
       const current = settingConstants.SETTING_RENDERER_CONFIG ?? {};
@@ -86,65 +129,24 @@
     try {
       unpatch = V.patcher.after("createList", createListModule, args => {
         try {
-          const sections = args?.[0]?.sections;
-          if (!Array.isArray(sections)) return;
-
-          let shiggySection = null;
-          for (const section of sections) {
-            if (!Array.isArray(section?.settings)) continue;
-            section.settings = section.settings.filter(key => key !== OLD_KEY);
-            if (
-              section.settings.includes("SHIGGYCORD")
-              || section.settings.includes("BUNNY_PLUGINS")
-              || section?.label === "ShiggyCord"
-              || section?.title === "ShiggyCord"
-            ) shiggySection = shiggySection ?? section;
-          }
-
-          for (let i = sections.length - 1; i >= 0; i -= 1) {
-            const section = sections[i];
-            if (
-              Array.isArray(section?.settings)
-              && section.settings.length === 0
-              && (section?.label === "Revenge" || section?.title === "Revenge")
-            ) sections.splice(i, 1);
-          }
-
-          if (!shiggySection || !Array.isArray(shiggySection.settings) || shiggySection.settings.includes(KEY)) return;
-
-          const pluginsIndex = shiggySection.settings.indexOf("BUNNY_PLUGINS");
-          const shiggyIndex = shiggySection.settings.indexOf("SHIGGYCORD");
-          const insertAt = pluginsIndex >= 0
-            ? pluginsIndex + 1
-            : shiggyIndex >= 0
-              ? shiggyIndex + 1
-              : shiggySection.settings.length;
-
-          shiggySection.settings.splice(insertAt, 0, KEY);
+          removeOldConfig();
+          cleanSections(args?.[0]?.sections);
         } catch {}
       });
+      return true;
     } catch {
+      unpatch = null;
       return false;
     }
-
-    installed = true;
-    return true;
-  }
-
-  function stopRetry() {
-    if (retryTimer) clearInterval(retryTimer);
-    retryTimer = null;
-  }
-
-  function retry() {
-    if (install()) stopRetry();
   }
 
   function cleanup() {
-    stopRetry();
+    if (delayedStart) clearTimeout(delayedStart);
+    delayedStart = null;
+    if (cleanupTimer) clearInterval(cleanupTimer);
+    cleanupTimer = null;
     try { unpatch?.(); } catch {}
     unpatch = null;
-    installed = false;
 
     try {
       const current = settingConstants?.SETTING_RENDERER_CONFIG ?? {};
@@ -158,9 +160,15 @@
 
   return {
     onLoad() {
-      retry();
-      retryTimer = setInterval(retry, 750);
-      setTimeout(stopRetry, 30000);
+      // Install after normal enabled plugins have started so this patch runs last
+      // and can remove Purge Tools' legacy Revenge placement reliably.
+      delayedStart = setTimeout(() => {
+        install();
+        cleanupTimer = setInterval(() => {
+          removeOldConfig();
+          if (!unpatch) install();
+        }, 1500);
+      }, 4500);
     },
     onUnload() { cleanup(); },
   };
