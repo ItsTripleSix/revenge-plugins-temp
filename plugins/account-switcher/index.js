@@ -7,7 +7,8 @@
   const { React, ReactNative: RN } = V.metro.common;
   const { findByProps, findByName, findByStoreName } = V.metro;
 
-  const VERSION = "1.1.0-shiggy";
+  const VERSION = "1.1.1-shiggy";
+  const SHORTCUT_KEY = "ITS_TRIPLE_SIX_ACCOUNT_SWITCHER_SHIGGY";
   const RUNTIME_KEY = "__itsTripleSixAccountSwitcherRuntime";
 
   try { globalThis[RUNTIME_KEY]?.cleanup?.(); } catch {}
@@ -19,7 +20,9 @@
     multiAccountActions: null,
     openManageAccountsModal: null,
     capabilityUnpatch: null,
+    settingsUnpatch: null,
     nativeEnabled: false,
+    shortcutInstalled: false,
     retryTimer: null,
     cleanup: null,
   };
@@ -83,6 +86,9 @@
       } catch {}
     }
 
+    // Intentionally do NOT force canUseMultiAccountNotifications.
+    // Inactive-account notifications can launch Discord into the wrong account
+    // context when tapped. Shiggy port leaves Discord's notification behavior alone.
     runtime.nativeEnabled = !!runtime.capabilityUnpatch;
     return runtime.nativeEnabled;
   }
@@ -292,7 +298,7 @@
     children.push(React.createElement(RN.Text, {
       key: "diag",
       style: { color: C.muted, fontSize: 12, lineHeight: 17 },
-    }, `v${VERSION} • native:${runtime.nativeEnabled ? "yes" : "no"} • manager:${managerAvailable ? "yes" : "no"} • switch:${runtime.multiAccountActions?.switchAccount ? "yes" : "no"}`));
+    }, `v${VERSION} • native:${runtime.nativeEnabled ? "yes" : "no"} • manager:${managerAvailable ? "yes" : "no"} • switch:${runtime.multiAccountActions?.switchAccount ? "yes" : "no"} • shortcut:${runtime.shortcutInstalled ? "yes" : "no"}`));
 
     const Scroll = RN.ScrollView ?? RN.View;
     return React.createElement(Scroll, {
@@ -301,12 +307,93 @@
     }, children);
   }
 
+  function installShiggyShortcut() {
+    if (runtime.shortcutInstalled) return true;
+
+    const settingConstants = find("SETTING_RENDERER_CONFIG");
+    const createListModule = find("createList");
+    if (!settingConstants || !createListModule?.createList) return false;
+
+    const rootNavigation = find("getRootNavigationRef");
+    const icon = V.ui?.assets?.getAssetIDByName?.("UserIcon")
+      ?? V.ui?.assets?.getAssetIDByName?.("PersonIcon");
+
+    const open = () => {
+      try {
+        const navigation = rootNavigation?.getRootNavigationRef?.();
+        if (!navigation?.navigate) throw new Error("Navigation unavailable");
+        navigation.navigate("BUNNY_CUSTOM_PAGE", {
+          title: "Account Switcher",
+          render: () => React.createElement(Settings),
+        });
+      } catch (error) {
+        toast(`Could not open Account Switcher: ${error?.message ?? error}`);
+      }
+    };
+
+    try {
+      const current = settingConstants.SETTING_RENDERER_CONFIG ?? {};
+      settingConstants.SETTING_RENDERER_CONFIG = {
+        ...current,
+        [SHORTCUT_KEY]: {
+          type: "pressable",
+          useTitle: () => "Account Switcher",
+          title: () => "Account Switcher",
+          icon,
+          IconComponent: icon != null
+            ? () => React.createElement(RN.Image, {
+                source: icon,
+                style: { width: 24, height: 24, tintColor: C.text },
+              })
+            : undefined,
+          onPress: open,
+          withArrow: true,
+        },
+      };
+    } catch {
+      return false;
+    }
+
+    try {
+      runtime.settingsUnpatch = V.patcher.after("createList", createListModule, args => {
+        try {
+          const sections = args?.[0]?.sections;
+          if (!Array.isArray(sections)) return;
+
+          const section = sections.find(item =>
+            Array.isArray(item?.settings)
+            && (item.settings.includes("SHIGGYCORD") || item.settings.includes("BUNNY_PLUGINS"))
+          ) ?? sections.find(item => item?.label === "ShiggyCord" || item?.title === "ShiggyCord");
+
+          if (!section || !Array.isArray(section.settings) || section.settings.includes(SHORTCUT_KEY)) return;
+
+          const pluginsIndex = section.settings.indexOf("BUNNY_PLUGINS");
+          const shiggyIndex = section.settings.indexOf("SHIGGYCORD");
+          const insertAt = pluginsIndex >= 0
+            ? pluginsIndex + 1
+            : shiggyIndex >= 0
+              ? shiggyIndex + 1
+              : section.settings.length;
+
+          section.settings.splice(insertAt, 0, SHORTCUT_KEY);
+        } catch {}
+      });
+    } catch {
+      return false;
+    }
+
+    runtime.shortcutInstalled = true;
+    return true;
+  }
+
   function retrySetup() {
     enableNativeSwitcher();
     resolveNative();
+    installShiggyShortcut();
 
     if (
       runtime.nativeEnabled
+      && runtime.shortcutInstalled
       && runtime.multiAccountActions?.switchAccount
       && runtime.openManageAccountsModal
     ) {
@@ -319,10 +406,24 @@
     if (runtime.retryTimer) clearInterval(runtime.retryTimer);
     runtime.retryTimer = null;
 
+    try { runtime.settingsUnpatch?.(); } catch {}
+    runtime.settingsUnpatch = null;
+
+    try {
+      const settingConstants = find("SETTING_RENDERER_CONFIG");
+      const current = settingConstants?.SETTING_RENDERER_CONFIG ?? {};
+      if (current[SHORTCUT_KEY]) {
+        const next = { ...current };
+        delete next[SHORTCUT_KEY];
+        settingConstants.SETTING_RENDERER_CONFIG = next;
+      }
+    } catch {}
+
     try { runtime.capabilityUnpatch?.(); } catch {}
     runtime.capabilityUnpatch = null;
 
     runtime.nativeEnabled = false;
+    runtime.shortcutInstalled = false;
     try { delete globalThis[RUNTIME_KEY]; }
     catch { globalThis[RUNTIME_KEY] = null; }
   }
