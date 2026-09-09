@@ -5,9 +5,11 @@
   if (!V?.metro || !V?.patcher) return {};
 
   const { findByProps } = V.metro;
-  const SHORTCUT_KEY = "ITS_TRIPLE_SIX_PURGE_TOOLS";
+  const OLD_KEY = "ITS_TRIPLE_SIX_PURGE_TOOLS";
+  const NEW_KEY = "ITS_TRIPLE_SIX_PURGE_TOOLS_SHIGGY";
   let unpatch = null;
   let retryTimer = null;
+  let settingConstants = null;
 
   function find(...props) {
     try { return findByProps?.(...props); } catch { return undefined; }
@@ -16,13 +18,29 @@
   function install() {
     if (unpatch) return true;
 
-    const settingConstants = find("SETTING_RENDERER_CONFIG");
+    settingConstants = find("SETTING_RENDERER_CONFIG");
     const createListModule = find("createList");
-    const config = settingConstants?.SETTING_RENDERER_CONFIG;
+    const current = settingConstants?.SETTING_RENDERER_CONFIG ?? {};
+    const source = current[OLD_KEY];
 
-    // Purge Tools itself registers this setting entry. This bridge only places
-    // that already-registered entry into ShiggyCord's settings section.
-    if (!config?.[SHORTCUT_KEY] || !createListModule?.createList) return false;
+    // Purge Tools registers OLD_KEY itself. Clone that exact working entry under
+    // a unique Shiggy key so Discord's settings list does not deduplicate it
+    // against the old Revenge-section entry during this temporary test.
+    if (!source || !createListModule?.createList) return false;
+
+    try {
+      settingConstants.SETTING_RENDERER_CONFIG = {
+        ...current,
+        [NEW_KEY]: {
+          ...source,
+          useTitle: () => "Purge Tools",
+          title: () => "Purge Tools",
+          withArrow: true,
+        },
+      };
+    } catch {
+      return false;
+    }
 
     try {
       unpatch = V.patcher.after("createList", createListModule, args => {
@@ -35,7 +53,7 @@
             && (item.settings.includes("SHIGGYCORD") || item.settings.includes("BUNNY_PLUGINS"))
           ) ?? sections.find(item => item?.label === "ShiggyCord" || item?.title === "ShiggyCord");
 
-          if (!section || !Array.isArray(section.settings) || section.settings.includes(SHORTCUT_KEY)) return;
+          if (!section || !Array.isArray(section.settings) || section.settings.includes(NEW_KEY)) return;
 
           const pluginsIndex = section.settings.indexOf("BUNNY_PLUGINS");
           const shiggyIndex = section.settings.indexOf("SHIGGYCORD");
@@ -45,7 +63,7 @@
               ? shiggyIndex + 1
               : section.settings.length;
 
-          section.settings.splice(insertAt, 0, SHORTCUT_KEY);
+          section.settings.splice(insertAt, 0, NEW_KEY);
         } catch {}
       });
       return true;
@@ -68,12 +86,23 @@
     setTimeout(stopRetry, 30000);
   }
 
+  function cleanup() {
+    stopRetry();
+    try { unpatch?.(); } catch {}
+    unpatch = null;
+
+    try {
+      const current = settingConstants?.SETTING_RENDERER_CONFIG ?? {};
+      if (current[NEW_KEY]) {
+        const next = { ...current };
+        delete next[NEW_KEY];
+        settingConstants.SETTING_RENDERER_CONFIG = next;
+      }
+    } catch {}
+  }
+
   return {
     onLoad() { startRetry(); },
-    onUnload() {
-      stopRetry();
-      try { unpatch?.(); } catch {}
-      unpatch = null;
-    },
+    onUnload() { cleanup(); },
   };
 })()
