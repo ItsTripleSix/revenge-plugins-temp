@@ -7,6 +7,7 @@
   const { React, ReactNative: RN } = V.metro.common;
   const { findByProps } = V.metro;
   const KEY = "ITS_TRIPLE_SIX_PURGE_TOOLS_SHIGGY";
+  const OLD_KEY = "ITS_TRIPLE_SIX_PURGE_TOOLS";
   let unpatch = null;
   let retryTimer = null;
   let settingConstants = null;
@@ -88,22 +89,38 @@
           const sections = args?.[0]?.sections;
           if (!Array.isArray(sections)) return;
 
-          const section = sections.find(item =>
-            Array.isArray(item?.settings)
-            && (item.settings.includes("SHIGGYCORD") || item.settings.includes("BUNNY_PLUGINS"))
-          ) ?? sections.find(item => item?.label === "ShiggyCord" || item?.title === "ShiggyCord");
+          let shiggySection = null;
+          for (const section of sections) {
+            if (!Array.isArray(section?.settings)) continue;
+            section.settings = section.settings.filter(key => key !== OLD_KEY);
+            if (
+              section.settings.includes("SHIGGYCORD")
+              || section.settings.includes("BUNNY_PLUGINS")
+              || section?.label === "ShiggyCord"
+              || section?.title === "ShiggyCord"
+            ) shiggySection = shiggySection ?? section;
+          }
 
-          if (!section || !Array.isArray(section.settings) || section.settings.includes(KEY)) return;
+          for (let i = sections.length - 1; i >= 0; i -= 1) {
+            const section = sections[i];
+            if (
+              Array.isArray(section?.settings)
+              && section.settings.length === 0
+              && (section?.label === "Revenge" || section?.title === "Revenge")
+            ) sections.splice(i, 1);
+          }
 
-          const pluginsIndex = section.settings.indexOf("BUNNY_PLUGINS");
-          const shiggyIndex = section.settings.indexOf("SHIGGYCORD");
+          if (!shiggySection || !Array.isArray(shiggySection.settings) || shiggySection.settings.includes(KEY)) return;
+
+          const pluginsIndex = shiggySection.settings.indexOf("BUNNY_PLUGINS");
+          const shiggyIndex = shiggySection.settings.indexOf("SHIGGYCORD");
           const insertAt = pluginsIndex >= 0
             ? pluginsIndex + 1
             : shiggyIndex >= 0
               ? shiggyIndex + 1
-              : section.settings.length;
+              : shiggySection.settings.length;
 
-          section.settings.splice(insertAt, 0, KEY);
+          shiggySection.settings.splice(insertAt, 0, KEY);
         } catch {}
       });
     } catch {
