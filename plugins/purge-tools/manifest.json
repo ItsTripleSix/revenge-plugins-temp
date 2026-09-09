@@ -1,13 +1,13 @@
 {
   "name": "Purge Tools",
-  "description": "Bulk-delete your own, a specific user's, or all matching server messages; remove your own or a specific user's reactions with permission checks; includes pinned-message protection, image/file attachment filters, reusable previews, independent filters/order, verification, persistent resume, progress, bulk acceleration, and adaptive pacing.",
+  "description": "ShiggyCord port of Purge Tools with previews, independent filters, permission checks, persistent resume, verification, progress, bulk acceleration, and adaptive pacing.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "8297720eba5d4718d45636cdae4120b72202482b",
+  "hash": "ba0ef21ff29c313f75c260cd2d89e4fdd835584d",
   "vendetta": {
     "icon": "TrashIcon"
   }
