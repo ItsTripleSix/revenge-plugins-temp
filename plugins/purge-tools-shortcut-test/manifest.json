@@ -1,0 +1,14 @@
+{
+  "name": "Purge Tools Shortcut Test",
+  "description": "Temporary ShiggyCord settings shortcut bridge for Purge Tools testing.",
+  "authors": [
+    {
+      "name": "ItsTripleSix"
+    }
+  ],
+  "main": "index.js",
+  "hash": "776b1bc9aa721e395fbadfe7c48bec6f011e246a",
+  "vendetta": {
+    "icon": "TrashIcon"
+  }
+}
