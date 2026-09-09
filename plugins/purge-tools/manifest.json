@@ -1,0 +1,14 @@
+{
+  "name": "Purge Tools",
+  "description": "Bulk-delete your own, a specific user's, or all matching server messages; remove your own or a specific user's reactions with permission checks; includes pinned-message protection, image/file attachment filters, reusable previews, independent filters/order, verification, persistent resume, progress, bulk acceleration, and adaptive pacing.",
+  "authors": [
+    {
+      "name": "ItsTripleSix"
+    }
+  ],
+  "main": "index.js",
+  "hash": "6874e14ce5884300853e229741c71c67e0c4353c",
+  "vendetta": {
+    "icon": "TrashIcon"
+  }
+}
