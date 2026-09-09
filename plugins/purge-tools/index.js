@@ -1,4 +1,4 @@
-(async () => {
+(() => {
   "use strict";
 
   const V = globalThis.vendetta ?? vendetta;
@@ -13,9 +13,13 @@
   const FALLBACK_CORE = "https://raw.githubusercontent.com/ItsTripleSix/revenge-plugins/main/plugins/purge-tools/index.js";
 
   let core = null;
+  let coreError = null;
+  let loadPromise = null;
+  let started = false;
   let settingsUnpatch = null;
   let retryTimer = null;
   let settingConstants = null;
+  const listeners = new Set();
 
   function find(...props) {
     try { return findByProps?.(...props); } catch { return undefined; }
@@ -23,6 +27,10 @@
 
   function toast(text) {
     try { V.ui?.toasts?.showToast?.(String(text)); } catch {}
+  }
+
+  function notify() {
+    for (const fn of listeners) try { fn(); } catch {}
   }
 
   async function fetchText(url) {
@@ -49,6 +57,15 @@
 
     if (!source) throw new Error("Could not load Purge Tools core");
 
+    // Shiggy owns the shortcut. Disable the old Revenge shortcut inside the
+    // original core while leaving every purge/preview feature unchanged.
+    source = source
+      .replace('const PLUGIN_VERSION = "1.1.1";', 'const PLUGIN_VERSION = "1.1.2-shiggy";')
+      .replace(
+        'onLoad() { installSettingsShortcut(); scheduleAutoResume(); },',
+        'onLoad() { scheduleAutoResume(); },',
+      );
+
     const factory = (0, eval)(`vendetta=>{return ${source}}\n//# sourceURL=${sibling}`);
     const raw = factory(V);
     const resolved = typeof raw === "function" ? raw() : raw;
@@ -74,8 +91,7 @@
 
     settingConstants = find("SETTING_RENDERER_CONFIG");
     const createListModule = find("createList");
-    const Settings = core?.settings;
-    if (!settingConstants || !createListModule?.createList || typeof Settings !== "function") return false;
+    if (!settingConstants || !createListModule?.createList) return false;
 
     const rootNavigation = find("getRootNavigationRef");
     const icon = V.ui?.assets?.getAssetIDByName?.("TrashIcon")
@@ -87,7 +103,7 @@
         if (!navigation?.navigate) throw new Error("Navigation unavailable");
         navigation.navigate("BUNNY_CUSTOM_PAGE", {
           title: "Purge Tools",
-          render: () => React.createElement(Settings),
+          render: () => React.createElement(SettingsBridge),
         });
       } catch (error) {
         toast(`Could not open Purge Tools: ${error?.message ?? error}`);
@@ -192,18 +208,80 @@
     } catch {}
   }
 
-  core = await loadCore();
+  function ensureCore() {
+    if (core) return Promise.resolve(core);
+    if (loadPromise) return loadPromise;
+
+    coreError = null;
+    loadPromise = loadCore()
+      .then(plugin => {
+        core = plugin;
+        if (started) {
+          try { core?.onLoad?.(); } catch (error) { toast(`Purge Tools core start failed: ${error?.message ?? error}`); }
+          stripOldConfig();
+        }
+        notify();
+        return core;
+      })
+      .catch(error => {
+        coreError = error;
+        loadPromise = null;
+        notify();
+        toast(`Purge Tools failed to load: ${error?.message ?? error}`);
+        throw error;
+      });
+
+    loadPromise.catch(() => {});
+    return loadPromise;
+  }
+
+  function SettingsBridge() {
+    const [, render] = React.useReducer(value => value + 1, 0);
+
+    React.useEffect(() => {
+      const listener = () => render();
+      listeners.add(listener);
+      ensureCore();
+      return () => listeners.delete(listener);
+    }, []);
+
+    if (typeof core?.settings === "function") {
+      return React.createElement(core.settings);
+    }
+
+    const Pressable = RN.Pressable ?? RN.TouchableOpacity;
+    const message = coreError
+      ? `Could not load Purge Tools: ${coreError?.message ?? coreError}`
+      : "Loading Purge Tools…";
+
+    return React.createElement(
+      RN.View,
+      { style: { flex: 1, padding: 16, backgroundColor: "#111214" } },
+      React.createElement(RN.Text, { style: { color: "#F2F3F5", fontSize: 16 } }, message),
+      coreError ? React.createElement(
+        Pressable,
+        {
+          onPress: () => { coreError = null; loadPromise = null; ensureCore(); render(); },
+          style: { marginTop: 14, padding: 11, borderRadius: 8, backgroundColor: "#5865F2", alignItems: "center" },
+        },
+        React.createElement(RN.Text, { style: { color: "#F2F3F5", fontWeight: "700" } }, "Retry"),
+      ) : null,
+    );
+  }
 
   return {
     onLoad() {
-      core?.onLoad?.();
+      started = true;
       stripOldConfig();
       startRetry();
+      ensureCore();
     },
     onUnload() {
+      started = false;
       cleanupShortcut();
       try { core?.onUnload?.(); } catch {}
+      listeners.clear();
     },
-    settings: core?.settings,
+    settings: SettingsBridge,
   };
 })()
