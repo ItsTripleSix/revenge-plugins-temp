@@ -1,13 +1,13 @@
 {
   "name": "Account Switcher",
-  "description": "Restores Discord's native mobile multi-account switcher on ShiggyCord without patching the ShiggyCord settings list or forcing inactive-account notifications.",
+  "description": "Restores Discord's native mobile multi-account switcher on ShiggyCord using Shiggy's lazy module system, without settings injection or inactive-account notification overrides.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "d52caf0462bdafe8ba491f2f69d71d3a8d21f2be",
+  "hash": "f6f7224dffdcbbc3f80d096485122186962fd131",
   "vendetta": {
     "icon": "UserIcon"
   }
