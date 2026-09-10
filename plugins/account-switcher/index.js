@@ -1,37 +1,34 @@
 (() => {
   "use strict";
 
-  const V = globalThis.vendetta;
+  // Shiggy gives every Vendetta plugin its own local vendetta object.
+  // Do not use window/globalThis.vendetta here.
+  const V = vendetta;
   if (!V?.metro || !V?.patcher) return {};
 
   const { React, ReactNative: RN } = V.metro.common;
-  const { findByProps, findByName, findByStoreName } = V.metro;
+  const { findByProps, findByName } = V.metro;
 
-  const VERSION = "1.1.1-shiggy";
+  const VERSION = "1.2.0-shiggy";
   const SHORTCUT_KEY = "ITS_TRIPLE_SIX_ACCOUNT_SWITCHER_SHIGGY";
-  const RUNTIME_KEY = "__itsTripleSixAccountSwitcherRuntime";
-
-  try { globalThis[RUNTIME_KEY]?.cleanup?.(); } catch {}
+  const DEFER_MS = 6000;
 
   const runtime = {
+    stopped: false,
     capabilityModule: null,
-    multiAccountStore: null,
-    userStore: null,
-    multiAccountActions: null,
     openManageAccountsModal: null,
+    settingConstants: null,
+    createListModule: null,
     capabilityUnpatch: null,
     settingsUnpatch: null,
+    deferredTimer: null,
     nativeEnabled: false,
     shortcutInstalled: false,
-    retryTimer: null,
-    cleanup: null,
   };
-  globalThis[RUNTIME_KEY] = runtime;
 
   const C = {
     bg: "#111214",
     card: "#1e1f22",
-    card2: "#2b2d31",
     text: "#f2f3f5",
     muted: "#b5bac1",
     brand: "#5865f2",
@@ -40,124 +37,79 @@
   };
 
   function find(...props) {
-    try { return findByProps?.(...props); } catch { return undefined; }
+    try { return findByProps?.(...props); }
+    catch { return undefined; }
   }
 
   function findName(name) {
-    try { return findByName?.(name); } catch { return undefined; }
-  }
-
-  function findStore(name) {
-    try { return findByStoreName?.(name); } catch { return undefined; }
+    try { return findByName?.(name); }
+    catch { return undefined; }
   }
 
   function toast(text) {
     try { V.ui?.toasts?.showToast?.(String(text)); } catch {}
   }
 
-  function resolveNative() {
-    const capability = find("getCanUseMultiAccountMobile");
-    const store = findStore("MultiAccountStore")
-      ?? find("getUsers", "getValidUsers", "getHasLoggedInAccounts")
-      ?? capability;
-    const users = findStore("UserStore") ?? find("getCurrentUser");
-    const actions = find("switchAccount", "removeAccount", "moveAccount")
-      ?? find("switchAccount", "removeAccount");
-    const manager = findName("openManageAccountsModal");
+  // Cached, one-shot module resolution. There is deliberately no polling loop.
+  function resolveCapability() {
+    if (runtime.capabilityModule?.getCanUseMultiAccountMobile) {
+      return runtime.capabilityModule;
+    }
 
-    if (capability?.getCanUseMultiAccountMobile) runtime.capabilityModule = capability;
-    if (store) runtime.multiAccountStore = store;
-    if (users?.getCurrentUser) runtime.userStore = users;
-    if (actions?.switchAccount) runtime.multiAccountActions = actions;
-    if (typeof manager === "function") runtime.openManageAccountsModal = manager;
+    const module = find("getCanUseMultiAccountMobile");
+    if (module?.getCanUseMultiAccountMobile) runtime.capabilityModule = module;
+    return runtime.capabilityModule;
   }
 
   function enableNativeSwitcher() {
-    resolveNative();
-    if (!runtime.capabilityModule?.getCanUseMultiAccountMobile || !runtime.multiAccountStore) return false;
+    if (runtime.stopped) return false;
+    if (runtime.capabilityUnpatch) {
+      runtime.nativeEnabled = true;
+      return true;
+    }
 
-    if (!runtime.capabilityUnpatch) {
-      try {
-        runtime.capabilityUnpatch = V.patcher.after(
-          "getCanUseMultiAccountMobile",
-          runtime.capabilityModule,
-          () => true,
-        );
-      } catch {}
+    const capability = resolveCapability();
+    if (!capability?.getCanUseMultiAccountMobile) return false;
+
+    try {
+      runtime.capabilityUnpatch = V.patcher.after(
+        "getCanUseMultiAccountMobile",
+        capability,
+        () => true,
+      );
+    } catch {
+      runtime.capabilityUnpatch = null;
     }
 
     // Intentionally do NOT force canUseMultiAccountNotifications.
-    // Inactive-account notifications can launch Discord into the wrong account
-    // context when tapped. Shiggy port leaves Discord's notification behavior alone.
-    runtime.nativeEnabled = !!runtime.capabilityUnpatch;
+    // It is not needed for switching and can make notifications from an
+    // inactive account open Discord in the wrong account context.
+    runtime.nativeEnabled = typeof runtime.capabilityUnpatch === "function";
     return runtime.nativeEnabled;
   }
 
-  function normalizeAccount(entry) {
-    const user = entry?.user ?? entry;
-    if (!user?.id) return null;
-    return {
-      id: String(user.id),
-      username: String(user.username ?? user.id),
-      displayName: String(
-        user.globalName
-        ?? user.global_name
-        ?? user.displayName
-        ?? user.username
-        ?? user.id,
-      ),
-    };
-  }
-
-  function currentId() {
-    try { return String(runtime.userStore?.getCurrentUser?.()?.id ?? ""); }
-    catch { return ""; }
-  }
-
-  function accountList() {
-    resolveNative();
-    const found = [];
-    const store = runtime.multiAccountStore;
-
-    for (const getter of ["getValidUsers", "getUsers"]) {
-      try {
-        const raw = store?.[getter]?.();
-        const list = Array.isArray(raw)
-          ? raw
-          : raw && typeof raw === "object"
-            ? Object.values(raw)
-            : [];
-
-        for (const entry of list) {
-          const account = normalizeAccount(entry);
-          if (account) found.push(account);
-        }
-      } catch {}
+  function resolveNativeManager() {
+    if (typeof runtime.openManageAccountsModal === "function") {
+      return runtime.openManageAccountsModal;
     }
 
-    try {
-      const current = normalizeAccount(runtime.userStore?.getCurrentUser?.());
-      if (current) found.push(current);
-    } catch {}
-
-    const active = currentId();
-    return [...new Map(found.map(account => [account.id, account])).values()]
-      .sort((a, b) => {
-        if (a.id === active) return -1;
-        if (b.id === active) return 1;
-        return a.displayName.localeCompare(b.displayName);
-      });
+    const manager = findName("openManageAccountsModal");
+    if (typeof manager === "function") runtime.openManageAccountsModal = manager;
+    return runtime.openManageAccountsModal;
   }
 
   function openNativeAccountManager() {
-    resolveNative();
-    if (typeof runtime.openManageAccountsModal !== "function") {
+    // Re-check the capability only when the user actually asks to switch.
+    enableNativeSwitcher();
+
+    const manager = resolveNativeManager();
+    if (typeof manager !== "function") {
       toast("Discord's native account manager was not found on this build");
       return false;
     }
 
     try {
-      runtime.openManageAccountsModal();
+      manager();
       return true;
     } catch (error) {
       toast(`Could not open native account manager: ${error?.message ?? error}`);
@@ -165,30 +117,106 @@
     }
   }
 
-  async function switchNativeAccount(userId) {
-    resolveNative();
-    const target = String(userId ?? "");
-    if (!target || target === currentId()) return;
+  function findShiggySection(sections) {
+    if (!Array.isArray(sections)) return null;
 
-    if (typeof runtime.multiAccountActions?.switchAccount !== "function") {
-      throw new Error("Discord's native switch action was not found");
-    }
-
-    await Promise.resolve(runtime.multiAccountActions.switchAccount(target));
+    return sections.find(item =>
+      Array.isArray(item?.settings)
+      && (item.settings.includes("SHIGGYCORD") || item.settings.includes("BUNNY_PLUGINS"))
+    ) ?? sections.find(item => item?.label === "ShiggyCord" || item?.title === "ShiggyCord") ?? null;
   }
 
-  function Button({ text, onPress, secondary = false, disabled = false }) {
+  function injectShortcutIntoSections(sections) {
+    const section = findShiggySection(sections);
+    if (!section || !Array.isArray(section.settings) || section.settings.includes(SHORTCUT_KEY)) {
+      return;
+    }
+
+    const pluginsIndex = section.settings.indexOf("BUNNY_PLUGINS");
+    const shiggyIndex = section.settings.indexOf("SHIGGYCORD");
+    const insertAt = pluginsIndex >= 0
+      ? pluginsIndex + 1
+      : shiggyIndex >= 0
+        ? shiggyIndex + 1
+        : section.settings.length;
+
+    section.settings.splice(insertAt, 0, SHORTCUT_KEY);
+  }
+
+  function installShiggyShortcut() {
+    if (runtime.stopped || runtime.shortcutInstalled) return runtime.shortcutInstalled;
+
+    // Resolve only the two modules required for the Shiggy settings shortcut.
+    // If they are not ready yet, we simply stop. No background retry loop.
+    runtime.settingConstants ??= find("SETTING_RENDERER_CONFIG") ?? null;
+    runtime.createListModule ??= find("createList") ?? null;
+
+    const settingConstants = runtime.settingConstants;
+    const createListModule = runtime.createListModule;
+    if (!settingConstants || typeof createListModule?.createList !== "function") return false;
+
+    let icon;
+    try {
+      icon = V.ui?.assets?.getAssetIDByName?.("UserIcon")
+        ?? V.ui?.assets?.getAssetIDByName?.("PersonIcon");
+    } catch {}
+
+    try {
+      const current = settingConstants.SETTING_RENDERER_CONFIG ?? {};
+      if (!current[SHORTCUT_KEY]) {
+        settingConstants.SETTING_RENDERER_CONFIG = {
+          ...current,
+          [SHORTCUT_KEY]: {
+            type: "pressable",
+            useTitle: () => "Account Switcher",
+            title: () => "Account Switcher",
+            icon,
+            IconComponent: icon != null
+              ? () => React.createElement(RN.Image, {
+                  source: icon,
+                  style: { width: 24, height: 24, tintColor: C.text },
+                })
+              : undefined,
+            onPress: openNativeAccountManager,
+            withArrow: true,
+          },
+        };
+      }
+    } catch {
+      return false;
+    }
+
+    try {
+      if (!runtime.settingsUnpatch) {
+        runtime.settingsUnpatch = V.patcher.after("createList", createListModule, args => {
+          try { injectShortcutIntoSections(args?.[0]?.sections); } catch {}
+        });
+      }
+    } catch {
+      runtime.settingsUnpatch = null;
+      return false;
+    }
+
+    runtime.shortcutInstalled = typeof runtime.settingsUnpatch === "function";
+    return runtime.shortcutInstalled;
+  }
+
+  function integrate() {
+    if (runtime.stopped) return;
+    enableNativeSwitcher();
+    installShiggyShortcut();
+  }
+
+  function Button({ text, onPress, secondary = false }) {
     const Pressable = RN.Pressable ?? RN.TouchableOpacity;
     return React.createElement(Pressable, {
       onPress,
-      disabled,
       style: {
-        backgroundColor: secondary ? C.card2 : C.brand,
+        backgroundColor: secondary ? C.card : C.brand,
         paddingHorizontal: 14,
         paddingVertical: 11,
         borderRadius: 9,
         alignItems: "center",
-        opacity: disabled ? 0.45 : 1,
       },
     }, React.createElement(RN.Text, {
       style: { color: C.text, fontWeight: "700", fontSize: 14 },
@@ -197,13 +225,13 @@
 
   function Settings() {
     const [, refresh] = React.useReducer(x => x + 1, 0);
-    const [switching, setSwitching] = React.useState("");
 
-    enableNativeSwitcher();
-    const accounts = accountList();
-    const active = currentId();
-    const available = !!runtime.capabilityModule?.getCanUseMultiAccountMobile && !!runtime.multiAccountStore;
-    const managerAvailable = typeof runtime.openManageAccountsModal === "function";
+    React.useEffect(() => {
+      // Opening plugin settings is an explicit user action, so it is safe to
+      // retry any module lookups that were unavailable during deferred setup.
+      integrate();
+      refresh();
+    }, []);
 
     const children = [
       React.createElement(RN.View, {
@@ -217,88 +245,38 @@
         React.createElement(RN.Text, {
           key: "state",
           style: {
-            color: available && runtime.nativeEnabled ? C.green : C.red,
+            color: runtime.nativeEnabled ? C.green : C.red,
             marginTop: 6,
             fontSize: 13,
             fontWeight: "700",
           },
-        }, available && runtime.nativeEnabled
+        }, runtime.nativeEnabled
           ? "Discord native multi-account enabled"
           : "Native multi-account module not found yet"),
         React.createElement(RN.Text, {
-          key: "notify",
+          key: "safety",
           style: { color: C.muted, marginTop: 7, fontSize: 12, lineHeight: 17 },
-        }, "Inactive-account notifications are not forced on in the Shiggy port."),
+        }, "Safe startup build: no Metro polling, no direct account switching, and inactive-account notifications are not forced on."),
       ]),
       React.createElement(Button, {
-        key: "manage",
-        text: "+ Add / Manage Accounts",
-        onPress: () => openNativeAccountManager(),
-        disabled: !managerAvailable,
+        key: "open",
+        text: "Open Discord Account Manager",
+        onPress: openNativeAccountManager,
+      }),
+      React.createElement(Button, {
+        key: "repair",
+        text: "Refresh Integration",
+        secondary: true,
+        onPress: () => {
+          integrate();
+          refresh();
+        },
       }),
       React.createElement(RN.Text, {
-        key: "saved-title",
-        style: { color: C.text, fontSize: 16, fontWeight: "700", marginTop: 4 },
-      }, "Accounts"),
+        key: "diag",
+        style: { color: C.muted, fontSize: 12, lineHeight: 17 },
+      }, `v${VERSION} • native:${runtime.nativeEnabled ? "yes" : "no"} • manager:${typeof runtime.openManageAccountsModal === "function" ? "yes" : "lazy"} • shortcut:${runtime.shortcutInstalled ? "yes" : "no"}`),
     ];
-
-    if (!accounts.length) {
-      children.push(React.createElement(RN.View, {
-        key: "empty",
-        style: { backgroundColor: C.card2, padding: 12, borderRadius: 10 },
-      }, React.createElement(RN.Text, {
-        style: { color: C.muted, fontSize: 13, lineHeight: 18 },
-      }, "No accounts are available yet. Tap Add / Manage Accounts and sign into another account once.")));
-    } else {
-      const Pressable = RN.Pressable ?? RN.TouchableOpacity;
-      for (const account of accounts) {
-        const isCurrent = account.id === active;
-        const busy = switching === account.id;
-
-        children.push(React.createElement(Pressable, {
-          key: account.id,
-          disabled: isCurrent || !!switching,
-          onPress: async () => {
-            setSwitching(account.id);
-            try {
-              await switchNativeAccount(account.id);
-              toast(`Switching to ${account.displayName}`);
-            } catch (error) {
-              toast(`Account switch failed: ${error?.message ?? error}`);
-              setSwitching("");
-              refresh();
-            }
-          },
-          style: {
-            backgroundColor: C.card,
-            padding: 13,
-            borderRadius: 10,
-            opacity: isCurrent ? 0.72 : 1,
-          },
-        }, [
-          React.createElement(RN.Text, {
-            key: "name",
-            style: { color: C.text, fontSize: 15, fontWeight: "700" },
-          }, account.displayName),
-          React.createElement(RN.Text, {
-            key: "user",
-            style: { color: C.muted, fontSize: 13, marginTop: 2 },
-          }, `@${account.username}${isCurrent ? " • Current" : busy ? " • Switching…" : " • Tap to switch"}`),
-        ]));
-      }
-    }
-
-    children.push(React.createElement(Button, {
-      key: "refresh",
-      text: "Refresh",
-      secondary: true,
-      onPress: () => { enableNativeSwitcher(); refresh(); },
-    }));
-
-    children.push(React.createElement(RN.Text, {
-      key: "diag",
-      style: { color: C.muted, fontSize: 12, lineHeight: 17 },
-    }, `v${VERSION} • native:${runtime.nativeEnabled ? "yes" : "no"} • manager:${managerAvailable ? "yes" : "no"} • switch:${runtime.multiAccountActions?.switchAccount ? "yes" : "no"} • shortcut:${runtime.shortcutInstalled ? "yes" : "no"}`));
 
     const Scroll = RN.ScrollView ?? RN.View;
     return React.createElement(Scroll, {
@@ -307,115 +285,25 @@
     }, children);
   }
 
-  function installShiggyShortcut() {
-    if (runtime.shortcutInstalled) return true;
-
-    const settingConstants = find("SETTING_RENDERER_CONFIG");
-    const createListModule = find("createList");
-    if (!settingConstants || !createListModule?.createList) return false;
-
-    const rootNavigation = find("getRootNavigationRef");
-    const icon = V.ui?.assets?.getAssetIDByName?.("UserIcon")
-      ?? V.ui?.assets?.getAssetIDByName?.("PersonIcon");
-
-    const open = () => {
-      try {
-        const navigation = rootNavigation?.getRootNavigationRef?.();
-        if (!navigation?.navigate) throw new Error("Navigation unavailable");
-        navigation.navigate("BUNNY_CUSTOM_PAGE", {
-          title: "Account Switcher",
-          render: () => React.createElement(Settings),
-        });
-      } catch (error) {
-        toast(`Could not open Account Switcher: ${error?.message ?? error}`);
-      }
-    };
-
-    try {
-      const current = settingConstants.SETTING_RENDERER_CONFIG ?? {};
-      settingConstants.SETTING_RENDERER_CONFIG = {
-        ...current,
-        [SHORTCUT_KEY]: {
-          type: "pressable",
-          useTitle: () => "Account Switcher",
-          title: () => "Account Switcher",
-          icon,
-          IconComponent: icon != null
-            ? () => React.createElement(RN.Image, {
-                source: icon,
-                style: { width: 24, height: 24, tintColor: C.text },
-              })
-            : undefined,
-          onPress: open,
-          withArrow: true,
-        },
-      };
-    } catch {
-      return false;
-    }
-
-    try {
-      runtime.settingsUnpatch = V.patcher.after("createList", createListModule, args => {
-        try {
-          const sections = args?.[0]?.sections;
-          if (!Array.isArray(sections)) return;
-
-          const section = sections.find(item =>
-            Array.isArray(item?.settings)
-            && (item.settings.includes("SHIGGYCORD") || item.settings.includes("BUNNY_PLUGINS"))
-          ) ?? sections.find(item => item?.label === "ShiggyCord" || item?.title === "ShiggyCord");
-
-          if (!section || !Array.isArray(section.settings) || section.settings.includes(SHORTCUT_KEY)) return;
-
-          const pluginsIndex = section.settings.indexOf("BUNNY_PLUGINS");
-          const shiggyIndex = section.settings.indexOf("SHIGGYCORD");
-          const insertAt = pluginsIndex >= 0
-            ? pluginsIndex + 1
-            : shiggyIndex >= 0
-              ? shiggyIndex + 1
-              : section.settings.length;
-
-          section.settings.splice(insertAt, 0, SHORTCUT_KEY);
-        } catch {}
-      });
-    } catch {
-      return false;
-    }
-
-    runtime.shortcutInstalled = true;
-    return true;
-  }
-
-  function retrySetup() {
-    enableNativeSwitcher();
-    resolveNative();
-    installShiggyShortcut();
-
-    if (
-      runtime.nativeEnabled
-      && runtime.shortcutInstalled
-      && runtime.multiAccountActions?.switchAccount
-      && runtime.openManageAccountsModal
-    ) {
-      if (runtime.retryTimer) clearInterval(runtime.retryTimer);
-      runtime.retryTimer = null;
-    }
-  }
-
   function cleanup() {
-    if (runtime.retryTimer) clearInterval(runtime.retryTimer);
-    runtime.retryTimer = null;
+    runtime.stopped = true;
+
+    if (runtime.deferredTimer) {
+      clearTimeout(runtime.deferredTimer);
+      runtime.deferredTimer = null;
+    }
 
     try { runtime.settingsUnpatch?.(); } catch {}
     runtime.settingsUnpatch = null;
 
+    // Use the already-cached settings object. Never run a Metro search during
+    // unload/reload just to remove our shortcut.
     try {
-      const settingConstants = find("SETTING_RENDERER_CONFIG");
-      const current = settingConstants?.SETTING_RENDERER_CONFIG ?? {};
+      const current = runtime.settingConstants?.SETTING_RENDERER_CONFIG ?? {};
       if (current[SHORTCUT_KEY]) {
         const next = { ...current };
         delete next[SHORTCUT_KEY];
-        settingConstants.SETTING_RENDERER_CONFIG = next;
+        runtime.settingConstants.SETTING_RENDERER_CONFIG = next;
       }
     } catch {}
 
@@ -424,22 +312,25 @@
 
     runtime.nativeEnabled = false;
     runtime.shortcutInstalled = false;
-    try { delete globalThis[RUNTIME_KEY]; }
-    catch { globalThis[RUNTIME_KEY] = null; }
   }
-
-  runtime.cleanup = cleanup;
 
   return {
     onLoad() {
-      retrySetup();
-      runtime.retryTimer = setInterval(retrySetup, 750);
-      setTimeout(() => {
-        if (runtime.retryTimer) clearInterval(runtime.retryTimer);
-        runtime.retryTimer = null;
-      }, 30000);
+      runtime.stopped = false;
+
+      // Deliberately do zero Metro scanning during Shiggy's immediate plugin
+      // startup. The old build scanned several modules every 750 ms for up to
+      // 30 seconds. This build waits for Discord to settle, then tries once.
+      runtime.deferredTimer = setTimeout(() => {
+        runtime.deferredTimer = null;
+        integrate();
+      }, DEFER_MS);
     },
-    onUnload() { cleanup(); },
+
+    onUnload() {
+      cleanup();
+    },
+
     settings: Settings,
   };
 })()
