@@ -1,8 +1,6 @@
 (() => {
   "use strict";
 
-  // Use Shiggy's per-plugin Vendetta object, not window.vendetta. This keeps
-  // plugin storage/context intact and lets the plugin toggle behave normally.
   const V = vendetta;
   if (!V?.metro || !V?.patcher) return {};
 
@@ -42,36 +40,44 @@
   function portSource(source) {
     let out = String(source);
 
+    // The Shiggy build must use this plugin's per-plugin Vendetta context so
+    // persistent storage, manifest data and logging belong to Purge Tools.
+    out = out.replace(
+      "const V = globalThis.vendetta;",
+      "const V = vendetta;",
+    );
+
     out = out.replace(
       'const PLUGIN_VERSION = "1.1.1";',
-      'const PLUGIN_VERSION = "1.1.2-shiggy";',
+      'const PLUGIN_VERSION = "1.1.3-shiggy";',
+    );
+
+    // Purge Tools no longer owns or patches Shiggy's settings list. Settings
+    // Pins is the single reusable owner of optional shortcuts.
+    const shortcutStart = "  let settingsShortcutCleanup = null;\n\n  function installSettingsShortcut() {";
+    const scheduleStart = "  function scheduleAutoResume() {";
+    const startIndex = out.indexOf(shortcutStart);
+    const scheduleIndex = out.indexOf(scheduleStart);
+
+    if (startIndex < 0 || scheduleIndex < 0 || scheduleIndex <= startIndex) {
+      throw new Error("Could not strip Purge Tools settings shortcut");
+    }
+
+    out = out.slice(0, startIndex) + out.slice(scheduleIndex);
+
+    out = out.replace(
+      "    try { settingsShortcutCleanup?.(); } catch {}\n    settingsShortcutCleanup = null;\n",
+      "",
     );
 
     out = out.replace(
-      'const shortcutKey = "ITS_TRIPLE_SIX_PURGE_TOOLS";',
-      'const shortcutKey = "ITS_TRIPLE_SIX_PURGE_TOOLS_SHIGGY";',
+      "    onLoad() { installSettingsShortcut(); scheduleAutoResume(); },",
+      "    onLoad() { scheduleAutoResume(); },",
     );
 
-    out = out.replace(
-      'toast("Purge Tools shortcut unavailable on this Revenge build");',
-      'toast("Purge Tools shortcut unavailable on this ShiggyCord build");',
-    );
-
-    const revengeSection = `const section = sections.find(item =>\n          Array.isArray(item?.settings) && item.settings.includes("BUNNY")\n        ) ?? sections.find(item => item?.label === "Revenge" || item?.title === "Revenge");`;
-    const shiggySection = `const section = sections.find(item =>\n          Array.isArray(item?.settings)\n          && (item.settings.includes("SHIGGYCORD") || item.settings.includes("BUNNY_PLUGINS"))\n        ) ?? sections.find(item => item?.label === "ShiggyCord" || item?.title === "ShiggyCord");`;
-
-    if (!out.includes(revengeSection)) {
-      throw new Error("Could not port Purge Tools settings section");
+    if (out.includes("installSettingsShortcut") || out.includes("settingsShortcutCleanup")) {
+      throw new Error("Purge Tools shortcut code was not fully removed");
     }
-    out = out.replace(revengeSection, shiggySection);
-
-    const revengeInsert = `const fontsIndex = section.settings.indexOf("BUNNY_FONTS");\n        const pluginsIndex = section.settings.indexOf("BUNNY_PLUGINS");\n        const insertAt = fontsIndex >= 0\n          ? fontsIndex + 1\n          : pluginsIndex >= 0\n            ? pluginsIndex + 1\n            : section.settings.length;`;
-    const shiggyInsert = `const pluginsIndex = section.settings.indexOf("BUNNY_PLUGINS");\n        const shiggyIndex = section.settings.indexOf("SHIGGYCORD");\n        const insertAt = pluginsIndex >= 0\n          ? pluginsIndex + 1\n          : shiggyIndex >= 0\n            ? shiggyIndex + 1\n            : section.settings.length;`;
-
-    if (!out.includes(revengeInsert)) {
-      throw new Error("Could not port Purge Tools shortcut position");
-    }
-    out = out.replace(revengeInsert, shiggyInsert);
 
     return out;
   }
@@ -110,6 +116,14 @@
 
     loadPromise.catch(() => {});
     return loadPromise;
+  }
+
+  function hasInterruptedAutoResume() {
+    try {
+      return storage.autoResumeInterrupted === true && !!storage.activePurgeJob;
+    } catch {
+      return false;
+    }
   }
 
   function SettingsBridge() {
@@ -166,7 +180,10 @@
   return {
     onLoad() {
       started = true;
-      ensureCore();
+
+      // Normal startup does no network fetch, eval, Metro scan, or settings
+      // injection. Load only if a real interrupted auto-resume job requires it.
+      if (hasInterruptedAutoResume()) ensureCore();
     },
     onUnload() {
       started = false;
