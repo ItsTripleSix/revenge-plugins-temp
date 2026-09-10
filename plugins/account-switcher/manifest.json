@@ -1,13 +1,13 @@
 {
   "name": "Account Switcher",
-  "description": "ShiggyCord account switcher with Fast Connect client-state repair around account transitions. No startup hooks or settings injection.",
+  "description": "ShiggyCord account switcher that clears Shiggy's persisted Metro finder cache after an account transition. No startup hooks or settings injection.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "2f798e083d588d58718553d47cbb44ca550f89fa",
+  "hash": "af1814603288c49bce0b2036d94954612163b7a3",
   "vendetta": {
     "icon": "UserIcon"
   }
