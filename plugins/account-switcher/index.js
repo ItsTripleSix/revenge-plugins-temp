@@ -5,14 +5,25 @@
   if (!V?.metro?.common) return {};
 
   const { React, ReactNative: RN } = V.metro.common;
-  const VERSION = "2.1.0-shiggy";
+  const { instead } = V.patcher;
+  const { storage } = V.plugin;
+  const VERSION = "2.2.0-shiggy";
 
-  // Deliberately inert at startup. Discord modules are resolved only while the
-  // user has this settings page open or explicitly taps an account.
+  storage.onlyActiveNotifications ??= true;
+
   const runtime = {
     multiAccountStore: null,
     userStore: null,
     actions: null,
+    pushActions: null,
+    notificationTokenManager: null,
+    receiveNotificationModule: null,
+    patches: [],
+    pushPatched: false,
+    receivePatched: false,
+    notificationStatus: "starting",
+    blockedNotifications: 0,
+    startupTimer: null,
   };
 
   const C = {
@@ -24,6 +35,8 @@
     green: "#23a55a",
   };
 
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
   function toast(text) {
     try { V.ui?.toasts?.showToast?.(String(text)); } catch {}
   }
@@ -34,6 +47,17 @@
 
   function findStore(name) {
     try { return V.metro?.findByStoreName?.(name); } catch { return undefined; }
+  }
+
+  function findModule(predicate) {
+    try { return V.metro?.find?.(predicate); } catch { return undefined; }
+  }
+
+  function unwrapDefault(value) {
+    if (value?.default && (typeof value.default === "object" || typeof value.default === "function")) {
+      return value.default;
+    }
+    return value;
   }
 
   function resolveRuntime() {
@@ -51,10 +75,191 @@
     return runtime;
   }
 
+  function resolveNotifications() {
+    resolveRuntime();
+
+    runtime.pushActions ??= unwrapDefault(
+      find("registerDevice", "syncDevice", "unregisterDevice")
+    );
+
+    runtime.notificationTokenManager ??= unwrapDefault(
+      find("registerToken", "getToken", "handleSyncWithMultiAccount")
+      ?? findModule(module => {
+        const value = unwrapDefault(module);
+        return !!value
+          && typeof value.getToken === "function"
+          && typeof value.registerToken === "function"
+          && typeof value.handleSyncWithMultiAccount === "function";
+      })
+    );
+
+    if (!runtime.receiveNotificationModule) {
+      const module = findModule(candidate => {
+        const fn = candidate?.default;
+        if (typeof fn !== "function") return false;
+        if (fn.name === "receiveNotification") return true;
+        try { return String(fn).includes("receiving_user_id"); } catch { return false; }
+      });
+      if (module?.default && typeof module.default === "function") {
+        runtime.receiveNotificationModule = module;
+      }
+    }
+
+    return runtime;
+  }
+
   function currentId() {
     resolveRuntime();
     try { return String(runtime.userStore?.getCurrentUser?.()?.id ?? ""); }
     catch { return ""; }
+  }
+
+  function entryId(entry) {
+    return String(entry?.id ?? entry?.user?.id ?? "");
+  }
+
+  function installPushSyncPatch() {
+    resolveNotifications();
+    if (runtime.pushPatched) return true;
+
+    const pushActions = runtime.pushActions;
+    const store = runtime.multiAccountStore;
+    if (typeof pushActions?.syncDevice !== "function" || typeof store?.getValidUsers !== "function") {
+      return false;
+    }
+
+    runtime.patches.push(
+      instead("syncDevice", pushActions, (args, original) => {
+        if (storage.onlyActiveNotifications !== true) {
+          return original(...args);
+        }
+
+        const active = currentId();
+        if (!active) return original(...args);
+
+        const originalGetter = store.getValidUsers;
+        const ownDescriptor = Object.getOwnPropertyDescriptor(store, "getValidUsers");
+
+        try {
+          Object.defineProperty(store, "getValidUsers", {
+            configurable: true,
+            writable: true,
+            value: function getOnlyActiveUser() {
+              const users = originalGetter.call(store);
+              return Array.isArray(users)
+                ? users.filter(user => entryId(user) === active)
+                : users;
+            },
+          });
+
+          return original(...args);
+        } finally {
+          try {
+            if (ownDescriptor) Object.defineProperty(store, "getValidUsers", ownDescriptor);
+            else delete store.getValidUsers;
+          } catch {}
+        }
+      }),
+    );
+
+    runtime.pushPatched = true;
+    return true;
+  }
+
+  function installReceiveFilter() {
+    resolveNotifications();
+    if (runtime.receivePatched) return true;
+
+    const module = runtime.receiveNotificationModule;
+    if (!module || typeof module.default !== "function") return false;
+
+    runtime.patches.push(
+      instead("default", module, (args, original) => {
+        if (storage.onlyActiveNotifications !== true) {
+          return original(...args);
+        }
+
+        const source = args?.[0];
+        const getter = source?.getData;
+        if (typeof getter !== "function") return original(...args);
+
+        let data;
+        try { data = getter.call(source); }
+        catch { return original(...args); }
+
+        const receivingId = data?.receiving_user_id;
+        const active = currentId();
+
+        if (receivingId != null && active && String(receivingId) !== active) {
+          runtime.blockedNotifications += 1;
+          return false;
+        }
+
+        return original(...args);
+      }),
+    );
+
+    runtime.receivePatched = true;
+    return true;
+  }
+
+  function installNotificationProtection() {
+    const push = installPushSyncPatch();
+    const receive = installReceiveFilter();
+
+    if (push && receive) runtime.notificationStatus = "active-account filter ready";
+    else if (push) runtime.notificationStatus = "push filter ready";
+    else if (receive) runtime.notificationStatus = "local filter ready";
+    else runtime.notificationStatus = "notification modules not ready";
+
+    return push || receive;
+  }
+
+  async function syncNotificationRegistration() {
+    resolveNotifications();
+    installPushSyncPatch();
+
+    const manager = runtime.notificationTokenManager;
+    const pushActions = runtime.pushActions;
+    let token = null;
+    try { token = manager?.getToken?.() ?? null; } catch {}
+
+    if (!token) {
+      runtime.notificationStatus = "waiting for Android push token";
+      return false;
+    }
+
+    try {
+      if (
+        typeof pushActions?.syncDevice === "function"
+        && runtime.multiAccountStore?.canUseMultiAccountNotifications
+      ) {
+        await Promise.resolve(pushActions.syncDevice(token, false));
+      } else if (typeof manager?.registerToken === "function") {
+        await Promise.resolve(manager.registerToken());
+      } else {
+        runtime.notificationStatus = "push registration unavailable";
+        return false;
+      }
+
+      runtime.notificationStatus = storage.onlyActiveNotifications === true
+        ? "active account only"
+        : "Discord default";
+      return true;
+    } catch (error) {
+      runtime.notificationStatus = `sync failed: ${error?.message ?? error}`;
+      return false;
+    }
+  }
+
+  async function initializeNotificationProtection() {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      installNotificationProtection();
+      if (runtime.pushPatched && runtime.receivePatched) break;
+      await sleep(700);
+    }
+
+    await syncNotificationRegistration();
   }
 
   function normalizeAccount(entry) {
@@ -124,14 +329,75 @@
       throw new Error("Discord's multi-account switch action was not found");
     }
 
-    // Match Discord's own Manage Accounts behavior: leaving the second argument
-    // undefined selects Discord's normal synchronous account-switch path.
     await Promise.resolve(fn(target, undefined));
+
+    if (storage.onlyActiveNotifications === true) {
+      setTimeout(() => {
+        syncNotificationRegistration().catch(() => {});
+      }, 1200);
+    }
+  }
+
+  function NotificationToggle({ refresh }) {
+    const enabled = storage.onlyActiveNotifications === true;
+
+    return React.createElement(RN.View, {
+      style: {
+        backgroundColor: C.card,
+        padding: 14,
+        borderRadius: 12,
+        flexDirection: "row",
+        alignItems: "center",
+      },
+    }, [
+      React.createElement(RN.View, { key: "copy", style: { flex: 1, paddingRight: 12 } }, [
+        React.createElement(RN.Text, {
+          key: "title",
+          style: { color: C.text, fontSize: 15, fontWeight: "700" },
+        }, "Only notify active account"),
+        React.createElement(RN.Text, {
+          key: "desc",
+          style: { color: C.muted, marginTop: 4, fontSize: 12, lineHeight: 17 },
+        }, "Blocks notifications for saved accounts that are not currently active, including Android push notifications."),
+        React.createElement(RN.Text, {
+          key: "status",
+          style: {
+            color: enabled ? C.green : C.muted,
+            marginTop: 5,
+            fontSize: 11,
+            lineHeight: 16,
+          },
+        }, `Status: ${runtime.notificationStatus}${runtime.blockedNotifications ? ` • blocked ${runtime.blockedNotifications}` : ""}`),
+      ]),
+      React.createElement(RN.Switch, {
+        key: "switch",
+        value: enabled,
+        onValueChange: value => {
+          storage.onlyActiveNotifications = value;
+          refresh();
+          installNotificationProtection();
+          syncNotificationRegistration()
+            .then(ok => {
+              toast(ok
+                ? (value ? "Only active account will notify" : "Multi-account notifications restored")
+                : "Notification sync is still waiting for Discord");
+              refresh();
+            })
+            .catch(() => {});
+        },
+      }),
+    ]);
   }
 
   function Settings() {
     const [, refresh] = React.useReducer(value => value + 1, 0);
     const [switching, setSwitching] = React.useState("");
+
+    React.useEffect(() => {
+      initializeNotificationProtection()
+        .then(() => refresh())
+        .catch(() => {});
+    }, []);
 
     const accounts = accountList();
     const active = currentId();
@@ -150,8 +416,9 @@
         React.createElement(RN.Text, {
           key: "desc",
           style: { color: C.muted, marginTop: 6, fontSize: 12, lineHeight: 17 },
-        }, "Uses Discord's existing saved accounts and native account-switch action. No startup hooks, cache manipulation, or account-state repair code."),
+        }, "Uses Discord's saved accounts and native switch action. Active-account notification filtering is enabled by default."),
       ]),
+      React.createElement(NotificationToggle, { key: "notifications", refresh }),
       React.createElement(RN.Text, {
         key: "accounts-title",
         style: { color: C.text, fontSize: 16, fontWeight: "700" },
@@ -224,7 +491,7 @@
     children.push(React.createElement(RN.Text, {
       key: "version",
       style: { color: C.muted, fontSize: 12, lineHeight: 17 },
-    }, `v${VERSION} • switch:${canSwitch ? "yes" : "no"} • startup hooks:none`));
+    }, `v${VERSION} • switch:${canSwitch ? "yes" : "no"} • notifications:${storage.onlyActiveNotifications === true ? "active-only" : "default"}`));
 
     return React.createElement(
       RN.ScrollView ?? RN.View,
@@ -237,8 +504,19 @@
   }
 
   return {
-    onLoad() {},
-    onUnload() {},
+    onLoad() {
+      runtime.startupTimer = setTimeout(() => {
+        initializeNotificationProtection().catch(() => {});
+      }, 1000);
+    },
+    onUnload() {
+      if (runtime.startupTimer) clearTimeout(runtime.startupTimer);
+      for (const unpatch of runtime.patches.splice(0).reverse()) {
+        try { unpatch(); } catch {}
+      }
+      runtime.pushPatched = false;
+      runtime.receivePatched = false;
+    },
     settings: Settings,
   };
 })()
