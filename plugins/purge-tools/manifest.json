@@ -1,13 +1,13 @@
 {
   "name": "Purge Tools",
-  "description": "ShiggyCord port of Purge Tools with previews, independent filters, permission checks, persistent resume, verification, progress, bulk acceleration, and adaptive pacing.",
+  "description": "Startup-safe ShiggyCord port of Purge Tools. No settings-list injection; the core loads only when opened or when a real auto-resume job exists.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "ba0ef21ff29c313f75c260cd2d89e4fdd835584d",
+  "hash": "d535930f6dbd99b336feec4debbc6172ea066eea",
   "vendetta": {
     "icon": "TrashIcon"
   }
