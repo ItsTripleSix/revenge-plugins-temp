@@ -4,18 +4,15 @@
   const V = vendetta;
   if (!V?.metro?.common) return {};
 
-  const B = globalThis.bunny ?? globalThis.window?.bunny;
   const { React, ReactNative: RN } = V.metro.common;
-  const VERSION = "2.0.0-shiggy";
-  const METRO_CACHE_PATH = "caches/metro_modules.json";
+  const VERSION = "2.1.0-shiggy";
 
-  // Deliberately inert at startup. Everything below runs only while the user is
-  // inside this settings page or after they explicitly request an account switch.
+  // Deliberately inert at startup. Discord modules are resolved only while the
+  // user has this settings page open or explicitly taps an account.
   const runtime = {
     multiAccountStore: null,
     userStore: null,
     actions: null,
-    cacheStatus: "not run",
   };
 
   const C = {
@@ -25,10 +22,7 @@
     text: "#f2f3f5",
     muted: "#b5bac1",
     green: "#23a55a",
-    red: "#f23f43",
   };
-
-  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   function toast(text) {
     try { V.ui?.toasts?.showToast?.(String(text)); } catch {}
@@ -61,62 +55,6 @@
     resolveRuntime();
     try { return String(runtime.userStore?.getCurrentUser?.()?.id ?? ""); }
     catch { return ""; }
-  }
-
-  function cacheRemover() {
-    const fn = B?.api?.native?.fs?.removeFile;
-    return typeof fn === "function" ? fn : null;
-  }
-
-  async function removeMetroCache() {
-    const removeFile = cacheRemover();
-    if (!removeFile) {
-      runtime.cacheStatus = "Shiggy fs API unavailable";
-      return false;
-    }
-
-    try {
-      await removeFile(METRO_CACHE_PATH);
-      runtime.cacheStatus = "deleted";
-      return true;
-    } catch (error) {
-      runtime.cacheStatus = `delete error:${error?.message ?? error}`;
-      return false;
-    }
-  }
-
-  async function clearMetroCacheWhenReady(target) {
-    const wanted = String(target);
-    const deadline = Date.now() + 18000;
-
-    while (Date.now() < deadline) {
-      if (currentId() === wanted) {
-        // Give Discord's account transition time to finish causing any normal
-        // module lookups. Shiggy's Metro cache writer is debounced by 1 second,
-        // so repeated deletes spaced beyond that window prevent a pending write
-        // from simply recreating the file immediately after our first delete.
-        await sleep(3000);
-
-        let ok = false;
-        for (let i = 0; i < 4; i++) {
-          ok = await removeMetroCache() || ok;
-          if (i < 3) await sleep(1250);
-        }
-
-        if (ok) {
-          runtime.cacheStatus = "cleared after switch";
-          toast("Shiggy Metro cache cleared — force-close now");
-        } else {
-          toast(`Metro cache cleanup failed: ${runtime.cacheStatus}`);
-        }
-        return ok;
-      }
-      await sleep(250);
-    }
-
-    runtime.cacheStatus = "new account never became current";
-    toast("Account switched, but Metro cache cleanup never saw the new account");
-    return false;
   }
 
   function normalizeAccount(entry) {
@@ -179,20 +117,16 @@
   async function switchAccount(id) {
     resolveRuntime();
     const target = String(id ?? "");
-    if (!target || target === currentId()) return true;
+    if (!target || target === currentId()) return;
 
     const fn = runtime.actions?.switchAccount;
     if (typeof fn !== "function") {
       throw new Error("Discord's multi-account switch action was not found");
     }
 
-    runtime.cacheStatus = "waiting for new account";
-    const cleanup = clearMetroCacheWhenReady(target);
-
-    // Keep the same plain non-synchronous Discord switch from the earlier
-    // isolation build. v2.0 changes one thing: Shiggy's persisted Metro cache.
-    await Promise.resolve(fn(target, false));
-    return await cleanup;
+    // Match Discord's own Manage Accounts behavior: leaving the second argument
+    // undefined selects Discord's normal synchronous account-switch path.
+    await Promise.resolve(fn(target, undefined));
   }
 
   function Settings() {
@@ -202,7 +136,6 @@
     const accounts = accountList();
     const active = currentId();
     const canSwitch = typeof runtime.actions?.switchAccount === "function";
-    const hasCacheApi = !!cacheRemover();
     const Pressable = RN.Pressable ?? RN.TouchableOpacity;
 
     const children = [
@@ -217,16 +150,7 @@
         React.createElement(RN.Text, {
           key: "desc",
           style: { color: C.muted, marginTop: 6, fontSize: 12, lineHeight: 17 },
-        }, "Metro-cache isolation build. After the new account becomes active, this removes ShiggyCord's persisted Metro finder cache before the next cold launch."),
-        React.createElement(RN.Text, {
-          key: "diag",
-          style: {
-            color: hasCacheApi ? C.green : C.red,
-            marginTop: 8,
-            fontSize: 12,
-            lineHeight: 17,
-          },
-        }, `Current: ${active || "unknown"}\nMetro cache API: ${hasCacheApi ? "available" : "unavailable"}\nCleanup: ${runtime.cacheStatus}`),
+        }, "Uses Discord's existing saved accounts and native account-switch action. No startup hooks, cache manipulation, or account-state repair code."),
       ]),
       React.createElement(RN.Text, {
         key: "accounts-title",
@@ -277,26 +201,6 @@
         ]));
       }
     }
-
-    children.push(React.createElement(Pressable, {
-      key: "manual-cache",
-      disabled: !hasCacheApi,
-      onPress: async () => {
-        const ok = await removeMetroCache();
-        toast(ok ? "Shiggy Metro cache cleared" : `Metro cache cleanup failed: ${runtime.cacheStatus}`);
-        refresh();
-      },
-      style: {
-        backgroundColor: C.card2,
-        paddingHorizontal: 14,
-        paddingVertical: 11,
-        borderRadius: 9,
-        alignItems: "center",
-        opacity: hasCacheApi ? 1 : 0.5,
-      },
-    }, React.createElement(RN.Text, {
-      style: { color: C.text, fontWeight: "700", fontSize: 14 },
-    }, "Clear Shiggy Metro Cache Now")));
 
     children.push(React.createElement(Pressable, {
       key: "refresh",
