@@ -1,29 +1,23 @@
 (() => {
   "use strict";
 
-  // Shiggy gives every Vendetta plugin its own local vendetta object.
-  // Do not use window/globalThis.vendetta here.
+  // Shiggy supplies each Vendetta plugin with its own local API object.
   const V = vendetta;
   if (!V?.metro || !V?.patcher) return {};
 
   const { React, ReactNative: RN } = V.metro.common;
   const { findByProps, findByName } = V.metro;
 
-  const VERSION = "1.2.0-shiggy";
-  const SHORTCUT_KEY = "ITS_TRIPLE_SIX_ACCOUNT_SWITCHER_SHIGGY";
-  const DEFER_MS = 6000;
+  const VERSION = "1.3.0-shiggy";
+  const STARTUP_DELAY_MS = 10000;
 
   const runtime = {
     stopped: false,
     capabilityModule: null,
-    openManageAccountsModal: null,
-    settingConstants: null,
-    createListModule: null,
     capabilityUnpatch: null,
-    settingsUnpatch: null,
-    deferredTimer: null,
+    openManageAccountsModal: null,
+    startupTimer: null,
     nativeEnabled: false,
-    shortcutInstalled: false,
   };
 
   const C = {
@@ -36,28 +30,18 @@
     red: "#f23f43",
   };
 
-  function find(...props) {
-    try { return findByProps?.(...props); }
-    catch { return undefined; }
-  }
-
-  function findName(name) {
-    try { return findByName?.(name); }
-    catch { return undefined; }
-  }
-
   function toast(text) {
     try { V.ui?.toasts?.showToast?.(String(text)); } catch {}
   }
 
-  // Cached, one-shot module resolution. There is deliberately no polling loop.
   function resolveCapability() {
-    if (runtime.capabilityModule?.getCanUseMultiAccountMobile) {
-      return runtime.capabilityModule;
-    }
+    if (runtime.capabilityModule?.getCanUseMultiAccountMobile) return runtime.capabilityModule;
 
-    const module = find("getCanUseMultiAccountMobile");
-    if (module?.getCanUseMultiAccountMobile) runtime.capabilityModule = module;
+    try {
+      const found = findByProps?.("getCanUseMultiAccountMobile");
+      if (found?.getCanUseMultiAccountMobile) runtime.capabilityModule = found;
+    } catch {}
+
     return runtime.capabilityModule;
   }
 
@@ -81,9 +65,8 @@
       runtime.capabilityUnpatch = null;
     }
 
-    // Intentionally do NOT force canUseMultiAccountNotifications.
-    // It is not needed for switching and can make notifications from an
-    // inactive account open Discord in the wrong account context.
+    // Never force canUseMultiAccountNotifications. It is unrelated to switching
+    // and previously caused bad inactive-account notification behavior.
     runtime.nativeEnabled = typeof runtime.capabilityUnpatch === "function";
     return runtime.nativeEnabled;
   }
@@ -93,18 +76,21 @@
       return runtime.openManageAccountsModal;
     }
 
-    const manager = findName("openManageAccountsModal");
-    if (typeof manager === "function") runtime.openManageAccountsModal = manager;
+    try {
+      const found = findByName?.("openManageAccountsModal");
+      if (typeof found === "function") runtime.openManageAccountsModal = found;
+    } catch {}
+
     return runtime.openManageAccountsModal;
   }
 
   function openNativeAccountManager() {
-    // Re-check the capability only when the user actually asks to switch.
+    // These lookups only happen from an explicit user action.
     enableNativeSwitcher();
-
     const manager = resolveNativeManager();
+
     if (typeof manager !== "function") {
-      toast("Discord's native account manager was not found on this build");
+      toast("Discord's native account manager was not found yet. Try again after Discord finishes loading.");
       return false;
     }
 
@@ -115,96 +101,6 @@
       toast(`Could not open native account manager: ${error?.message ?? error}`);
       return false;
     }
-  }
-
-  function findShiggySection(sections) {
-    if (!Array.isArray(sections)) return null;
-
-    return sections.find(item =>
-      Array.isArray(item?.settings)
-      && (item.settings.includes("SHIGGYCORD") || item.settings.includes("BUNNY_PLUGINS"))
-    ) ?? sections.find(item => item?.label === "ShiggyCord" || item?.title === "ShiggyCord") ?? null;
-  }
-
-  function injectShortcutIntoSections(sections) {
-    const section = findShiggySection(sections);
-    if (!section || !Array.isArray(section.settings) || section.settings.includes(SHORTCUT_KEY)) {
-      return;
-    }
-
-    const pluginsIndex = section.settings.indexOf("BUNNY_PLUGINS");
-    const shiggyIndex = section.settings.indexOf("SHIGGYCORD");
-    const insertAt = pluginsIndex >= 0
-      ? pluginsIndex + 1
-      : shiggyIndex >= 0
-        ? shiggyIndex + 1
-        : section.settings.length;
-
-    section.settings.splice(insertAt, 0, SHORTCUT_KEY);
-  }
-
-  function installShiggyShortcut() {
-    if (runtime.stopped || runtime.shortcutInstalled) return runtime.shortcutInstalled;
-
-    // Resolve only the two modules required for the Shiggy settings shortcut.
-    // If they are not ready yet, we simply stop. No background retry loop.
-    runtime.settingConstants ??= find("SETTING_RENDERER_CONFIG") ?? null;
-    runtime.createListModule ??= find("createList") ?? null;
-
-    const settingConstants = runtime.settingConstants;
-    const createListModule = runtime.createListModule;
-    if (!settingConstants || typeof createListModule?.createList !== "function") return false;
-
-    let icon;
-    try {
-      icon = V.ui?.assets?.getAssetIDByName?.("UserIcon")
-        ?? V.ui?.assets?.getAssetIDByName?.("PersonIcon");
-    } catch {}
-
-    try {
-      const current = settingConstants.SETTING_RENDERER_CONFIG ?? {};
-      if (!current[SHORTCUT_KEY]) {
-        settingConstants.SETTING_RENDERER_CONFIG = {
-          ...current,
-          [SHORTCUT_KEY]: {
-            type: "pressable",
-            useTitle: () => "Account Switcher",
-            title: () => "Account Switcher",
-            icon,
-            IconComponent: icon != null
-              ? () => React.createElement(RN.Image, {
-                  source: icon,
-                  style: { width: 24, height: 24, tintColor: C.text },
-                })
-              : undefined,
-            onPress: openNativeAccountManager,
-            withArrow: true,
-          },
-        };
-      }
-    } catch {
-      return false;
-    }
-
-    try {
-      if (!runtime.settingsUnpatch) {
-        runtime.settingsUnpatch = V.patcher.after("createList", createListModule, args => {
-          try { injectShortcutIntoSections(args?.[0]?.sections); } catch {}
-        });
-      }
-    } catch {
-      runtime.settingsUnpatch = null;
-      return false;
-    }
-
-    runtime.shortcutInstalled = typeof runtime.settingsUnpatch === "function";
-    return runtime.shortcutInstalled;
-  }
-
-  function integrate() {
-    if (runtime.stopped) return;
-    enableNativeSwitcher();
-    installShiggyShortcut();
   }
 
   function Button({ text, onPress, secondary = false }) {
@@ -227,9 +123,9 @@
     const [, refresh] = React.useReducer(x => x + 1, 0);
 
     React.useEffect(() => {
-      // Opening plugin settings is an explicit user action, so it is safe to
-      // retry any module lookups that were unavailable during deferred setup.
-      integrate();
+      // Plugin settings are already open, so one explicit capability lookup here
+      // cannot interfere with Discord's splash/startup path.
+      enableNativeSwitcher();
       refresh();
     }, []);
 
@@ -256,7 +152,7 @@
         React.createElement(RN.Text, {
           key: "safety",
           style: { color: C.muted, marginTop: 7, fontSize: 12, lineHeight: 17 },
-        }, "Safe startup build: no Metro polling, no direct account switching, and inactive-account notifications are not forced on."),
+        }, "Startup-safe build: no ShiggyCord settings shortcut, no settings-list patching, no polling, no direct account switching, and no inactive-account notifications."),
       ]),
       React.createElement(Button, {
         key: "open",
@@ -264,18 +160,18 @@
         onPress: openNativeAccountManager,
       }),
       React.createElement(Button, {
-        key: "repair",
-        text: "Refresh Integration",
+        key: "refresh",
+        text: "Retry Native Integration",
         secondary: true,
         onPress: () => {
-          integrate();
+          enableNativeSwitcher();
           refresh();
         },
       }),
       React.createElement(RN.Text, {
         key: "diag",
         style: { color: C.muted, fontSize: 12, lineHeight: 17 },
-      }, `v${VERSION} • native:${runtime.nativeEnabled ? "yes" : "no"} • manager:${typeof runtime.openManageAccountsModal === "function" ? "yes" : "lazy"} • shortcut:${runtime.shortcutInstalled ? "yes" : "no"}`),
+      }, `v${VERSION} • native:${runtime.nativeEnabled ? "yes" : "no"} • manager:${typeof runtime.openManageAccountsModal === "function" ? "yes" : "lazy"}`),
     ];
 
     const Scroll = RN.ScrollView ?? RN.View;
@@ -288,43 +184,26 @@
   function cleanup() {
     runtime.stopped = true;
 
-    if (runtime.deferredTimer) {
-      clearTimeout(runtime.deferredTimer);
-      runtime.deferredTimer = null;
+    if (runtime.startupTimer) {
+      clearTimeout(runtime.startupTimer);
+      runtime.startupTimer = null;
     }
-
-    try { runtime.settingsUnpatch?.(); } catch {}
-    runtime.settingsUnpatch = null;
-
-    // Use the already-cached settings object. Never run a Metro search during
-    // unload/reload just to remove our shortcut.
-    try {
-      const current = runtime.settingConstants?.SETTING_RENDERER_CONFIG ?? {};
-      if (current[SHORTCUT_KEY]) {
-        const next = { ...current };
-        delete next[SHORTCUT_KEY];
-        runtime.settingConstants.SETTING_RENDERER_CONFIG = next;
-      }
-    } catch {}
 
     try { runtime.capabilityUnpatch?.(); } catch {}
     runtime.capabilityUnpatch = null;
-
     runtime.nativeEnabled = false;
-    runtime.shortcutInstalled = false;
   }
 
   return {
     onLoad() {
       runtime.stopped = false;
 
-      // Deliberately do zero Metro scanning during Shiggy's immediate plugin
-      // startup. The old build scanned several modules every 750 ms for up to
-      // 30 seconds. This build waits for Discord to settle, then tries once.
-      runtime.deferredTimer = setTimeout(() => {
-        runtime.deferredTimer = null;
-        integrate();
-      }, DEFER_MS);
+      // Absolutely no Metro lookup occurs in the immediate plugin startup path.
+      // Ten seconds later, make one capability lookup and stop. No retry loop.
+      runtime.startupTimer = setTimeout(() => {
+        runtime.startupTimer = null;
+        if (!runtime.stopped) enableNativeSwitcher();
+      }, STARTUP_DELAY_MS);
     },
 
     onUnload() {
