@@ -1,13 +1,13 @@
 {
   "name": "Account Switcher",
-  "description": "Opens Discord's native mobile account manager on ShiggyCord without patching the multi-account capability, notifications, settings list, or switch action.",
+  "description": "ShiggyCord account switcher using Discord's saved accounts with an explicitly non-synchronous switch path. No startup hooks, settings injection, capability patch, or notification override.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "97a6f41dff24dad59984ba9906169f994c05ee7e",
+  "hash": "9df7997dcd2bb2fa1ef8043434f42bc1cff45bae",
   "vendetta": {
     "icon": "UserIcon"
   }
