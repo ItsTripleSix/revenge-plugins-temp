@@ -6,11 +6,11 @@
   if (!V?.patcher || !V?.metro?.common) return {};
 
   const { React, ReactNative: RN } = V.metro.common;
-  const VERSION = "1.4.0-shiggy";
+  const VERSION = "1.5.0-shiggy";
 
-  // Shiggy's own lazy Metro proxies are designed to be patched before the
-  // underlying Discord module is initialized. Creating these proxies does not
-  // scan/load the module; Shiggy resolves them when needed.
+  // Shiggy lazy proxies are created without resolving Discord modules. More
+  // importantly, this plugin does not arm any patch during plugin startup.
+  // Everything happens only after the user explicitly opens the account manager.
   const capability = B?.metro?.findByPropsLazy?.("getCanUseMultiAccountMobile") ?? null;
   const accountManager = B?.metro?.findByNameLazy?.("openManageAccountsModal") ?? null;
 
@@ -36,8 +36,6 @@
     if (!capability) return false;
 
     try {
-      // Shiggy's patcher recognizes its lazy-module delay symbol, so this
-      // subscribes once and patches when Discord initializes the module.
       unpatch = V.patcher.after(
         "getCanUseMultiAccountMobile",
         capability,
@@ -49,12 +47,13 @@
       armed = false;
     }
 
-    // Never enable inactive-account notifications. They are not required for
-    // switching and can route notifications into the wrong account context.
+    // Never enable inactive-account notifications.
     return armed;
   }
 
   function openAccountManager() {
+    // First and only time the native account capability is touched is an
+    // explicit user action, after Discord is already usable.
     armNativeSwitcher();
 
     try {
@@ -63,7 +62,6 @@
         return;
       }
 
-      // Fallback only runs from this explicit user action.
       const manager = V.metro?.findByName?.("openManageAccountsModal");
       if (typeof manager === "function") {
         manager();
@@ -94,15 +92,15 @@
         }, "Account Switcher"),
         React.createElement(RN.Text, {
           style: {
-            color: armed ? C.green : C.red,
+            color: armed ? C.green : C.muted,
             marginTop: 6,
             fontSize: 13,
             fontWeight: "700",
           },
-        }, armed ? "Native multi-account patch armed" : "Native multi-account patch unavailable"),
+        }, armed ? "Native multi-account patch active" : "Idle until you open the account manager"),
         React.createElement(RN.Text, {
           style: { color: C.muted, marginTop: 7, fontSize: 12, lineHeight: 17 },
-        }, "Uses ShiggyCord's lazy module system. No polling, startup timer, settings injection, direct account switching, or inactive-account notification override."),
+        }, "Zero-startup-hook build: no patching, Metro resolution, polling, timers, settings injection, direct switching, or notification override occurs when Shiggy starts."),
       ),
       React.createElement(
         Pressable,
@@ -128,7 +126,8 @@
 
   return {
     onLoad() {
-      armNativeSwitcher();
+      // Intentionally empty. Account Switcher must never participate in the
+      // Discord/Shiggy startup path.
     },
     onUnload() {
       try { unpatch?.(); } catch {}
