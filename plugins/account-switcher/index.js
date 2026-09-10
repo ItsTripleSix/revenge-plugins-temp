@@ -2,52 +2,237 @@
   "use strict";
 
   const V = vendetta;
-  const B = globalThis.bunny;
   if (!V?.metro?.common) return {};
 
   const { React, ReactNative: RN } = V.metro.common;
-  const VERSION = "1.6.0-shiggy";
+  const VERSION = "1.7.0-shiggy";
 
-  // Shiggy's lazy finder does not resolve this Discord module until the user
-  // actually presses the button. We deliberately do NOT patch
-  // getCanUseMultiAccountMobile at all.
-  const accountManager = B?.metro?.findByNameLazy?.("openManageAccountsModal") ?? null;
+  // Intentionally no top-level Discord module lookups, lazy proxies, patches,
+  // timers, settings injection, or account-state work. This plugin does not
+  // participate in Shiggy's startup path at all.
+  const runtime = {
+    multiAccountStore: null,
+    userStore: null,
+    actions: null,
+  };
 
   const C = {
     bg: "#111214",
     card: "#1e1f22",
+    card2: "#2b2d31",
     text: "#f2f3f5",
     muted: "#b5bac1",
     brand: "#5865f2",
+    green: "#23a55a",
   };
 
   function toast(text) {
     try { V.ui?.toasts?.showToast?.(String(text)); } catch {}
   }
 
-  function openAccountManager() {
-    try {
-      if (typeof accountManager === "function") {
-        accountManager();
-        return;
-      }
+  function find(...props) {
+    try { return V.metro?.findByProps?.(...props); } catch { return undefined; }
+  }
 
-      // Fallback is only attempted from an explicit user press.
-      const manager = V.metro?.findByName?.("openManageAccountsModal");
-      if (typeof manager === "function") {
-        manager();
-        return;
-      }
-    } catch (error) {
-      toast(`Could not open Discord Account Manager: ${error?.message ?? error}`);
-      return;
+  function findStore(name) {
+    try { return V.metro?.findByStoreName?.(name); } catch { return undefined; }
+  }
+
+  function resolveRuntime() {
+    // Called only while the user is already inside this settings page or taps
+    // an account. Nothing here runs during Discord/Shiggy startup.
+    runtime.multiAccountStore ??= (
+      findStore("MultiAccountStore")
+      ?? find("getUsers", "getValidUsers", "getHasLoggedInAccounts")
+      ?? find("getUsers", "getValidUsers")
+    );
+    runtime.userStore ??= findStore("UserStore") ?? find("getCurrentUser", "getUser");
+    runtime.actions ??= (
+      find("switchAccount", "removeAccount", "moveAccount")
+      ?? find("switchAccount", "removeAccount")
+      ?? find("switchAccount")
+    );
+
+    return runtime;
+  }
+
+  function currentId() {
+    resolveRuntime();
+    try { return String(runtime.userStore?.getCurrentUser?.()?.id ?? ""); }
+    catch { return ""; }
+  }
+
+  function normalizeAccount(entry) {
+    const base = entry?.user ?? entry;
+    if (!base?.id) return null;
+
+    let user = base;
+    try {
+      user = runtime.userStore?.getUser?.(String(base.id)) ?? base;
+    } catch {}
+
+    return {
+      id: String(base.id),
+      username: String(user?.username ?? base?.username ?? base.id),
+      displayName: String(
+        user?.globalName
+        ?? user?.global_name
+        ?? user?.displayName
+        ?? base?.globalName
+        ?? base?.global_name
+        ?? base?.username
+        ?? base.id,
+      ),
+    };
+  }
+
+  function accountList() {
+    resolveRuntime();
+    const found = [];
+    const store = runtime.multiAccountStore;
+
+    for (const getter of ["getValidUsers", "getUsers"]) {
+      try {
+        const raw = store?.[getter]?.();
+        const list = Array.isArray(raw)
+          ? raw
+          : raw && typeof raw === "object"
+            ? Object.values(raw)
+            : [];
+
+        for (const entry of list) {
+          const account = normalizeAccount(entry);
+          if (account) found.push(account);
+        }
+      } catch {}
     }
 
-    toast("Discord's native account manager is unavailable on this build.");
+    try {
+      const current = normalizeAccount(runtime.userStore?.getCurrentUser?.());
+      if (current) found.push(current);
+    } catch {}
+
+    const active = currentId();
+    return [...new Map(found.map(account => [account.id, account])).values()]
+      .sort((a, b) => {
+        if (a.id === active) return -1;
+        if (b.id === active) return 1;
+        return a.displayName.localeCompare(b.displayName);
+      });
+  }
+
+  async function switchAccountAsync(id) {
+    resolveRuntime();
+    const target = String(id ?? "");
+    if (!target || target === currentId()) return;
+
+    const fn = runtime.actions?.switchAccount;
+    if (typeof fn !== "function") {
+      throw new Error("Discord's multi-account switch action was not found");
+    }
+
+    // Discord's own Manage Accounts screen passes undefined here, which its
+    // auth layer defaults to synchronous=true. This build deliberately passes
+    // false so we can test the non-synchronous account transition instead.
+    await Promise.resolve(fn(target, false));
   }
 
   function Settings() {
+    const [, refresh] = React.useReducer(value => value + 1, 0);
+    const [switching, setSwitching] = React.useState("");
+
+    const accounts = accountList();
+    const active = currentId();
+    const canSwitch = typeof runtime.actions?.switchAccount === "function";
     const Pressable = RN.Pressable ?? RN.TouchableOpacity;
+
+    const children = [
+      React.createElement(RN.View, {
+        key: "intro",
+        style: { backgroundColor: C.card, padding: 14, borderRadius: 12 },
+      }, [
+        React.createElement(RN.Text, {
+          key: "title",
+          style: { color: C.text, fontSize: 18, fontWeight: "700" },
+        }, "Account Switcher"),
+        React.createElement(RN.Text, {
+          key: "desc",
+          style: { color: C.muted, marginTop: 6, fontSize: 12, lineHeight: 17 },
+        }, "Experimental async-switch build. Uses Discord's saved accounts but bypasses the native Manage Accounts switch button and explicitly requests a non-synchronous account transition."),
+      ]),
+      React.createElement(RN.Text, {
+        key: "accounts-title",
+        style: { color: C.text, fontSize: 16, fontWeight: "700" },
+      }, "Accounts"),
+    ];
+
+    if (!accounts.length) {
+      children.push(React.createElement(RN.View, {
+        key: "empty",
+        style: { backgroundColor: C.card2, padding: 13, borderRadius: 10 },
+      }, React.createElement(RN.Text, {
+        style: { color: C.muted, fontSize: 13, lineHeight: 18 },
+      }, "No saved Discord accounts were found. This test build intentionally does not open Discord's native account manager because its normal switch path is what we are isolating.")));
+    } else {
+      for (const account of accounts) {
+        const isCurrent = account.id === active;
+        const busy = switching === account.id;
+
+        children.push(React.createElement(Pressable, {
+          key: account.id,
+          disabled: isCurrent || !!switching || !canSwitch,
+          onPress: async () => {
+            setSwitching(account.id);
+            try {
+              await switchAccountAsync(account.id);
+            } catch (error) {
+              toast(`Account switch failed: ${error?.message ?? error}`);
+              setSwitching("");
+              refresh();
+            }
+          },
+          style: {
+            backgroundColor: C.card,
+            padding: 13,
+            borderRadius: 10,
+            opacity: isCurrent ? 0.7 : 1,
+          },
+        }, [
+          React.createElement(RN.Text, {
+            key: "name",
+            style: { color: C.text, fontSize: 15, fontWeight: "700" },
+          }, account.displayName),
+          React.createElement(RN.Text, {
+            key: "user",
+            style: { color: isCurrent ? C.green : C.muted, fontSize: 13, marginTop: 2 },
+          }, `@${account.username}${isCurrent ? " • Current" : busy ? " • Switching…" : " • Tap to switch"}`),
+        ]));
+      }
+    }
+
+    children.push(React.createElement(Pressable, {
+      key: "refresh",
+      onPress: () => {
+        runtime.multiAccountStore = null;
+        runtime.userStore = null;
+        runtime.actions = null;
+        refresh();
+      },
+      style: {
+        backgroundColor: C.card2,
+        paddingHorizontal: 14,
+        paddingVertical: 11,
+        borderRadius: 9,
+        alignItems: "center",
+      },
+    }, React.createElement(RN.Text, {
+      style: { color: C.text, fontWeight: "700", fontSize: 14 },
+    }, "Refresh Accounts")));
+
+    children.push(React.createElement(RN.Text, {
+      key: "version",
+      style: { color: C.muted, fontSize: 12, lineHeight: 17 },
+    }, `v${VERSION} • switch:${canSwitch ? "yes" : "no"} • startup hooks:none`));
 
     return React.createElement(
       RN.ScrollView ?? RN.View,
@@ -55,35 +240,7 @@
         style: { flex: 1, backgroundColor: C.bg },
         contentContainerStyle: { padding: 16, paddingBottom: 40, gap: 12 },
       },
-      React.createElement(
-        RN.View,
-        { style: { backgroundColor: C.card, padding: 14, borderRadius: 12 } },
-        React.createElement(RN.Text, {
-          style: { color: C.text, fontSize: 18, fontWeight: "700" },
-        }, "Account Switcher"),
-        React.createElement(RN.Text, {
-          style: { color: C.muted, marginTop: 7, fontSize: 12, lineHeight: 17 },
-        }, "Modal-only build. It opens Discord's own account manager directly and does not patch the multi-account capability, notification behavior, settings list, or account-switch action."),
-      ),
-      React.createElement(
-        Pressable,
-        {
-          onPress: openAccountManager,
-          style: {
-            backgroundColor: C.brand,
-            paddingHorizontal: 14,
-            paddingVertical: 11,
-            borderRadius: 9,
-            alignItems: "center",
-          },
-        },
-        React.createElement(RN.Text, {
-          style: { color: C.text, fontWeight: "700", fontSize: 14 },
-        }, "Open Discord Account Manager"),
-      ),
-      React.createElement(RN.Text, {
-        style: { color: C.muted, fontSize: 12 },
-      }, `v${VERSION}`),
+      children,
     );
   }
 
