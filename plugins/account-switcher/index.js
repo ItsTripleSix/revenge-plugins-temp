@@ -5,15 +5,15 @@
   if (!V?.metro?.common) return {};
 
   const { React, ReactNative: RN } = V.metro.common;
-  const VERSION = "1.7.0-shiggy";
+  const VERSION = "1.8.0-shiggy";
 
-  // Intentionally no top-level Discord module lookups, lazy proxies, patches,
-  // timers, settings injection, or account-state work. This plugin does not
-  // participate in Shiggy's startup path at all.
+  // Nothing account-related runs at plugin startup. All Discord/native state is
+  // resolved only after the user opens this settings page.
   const runtime = {
     multiAccountStore: null,
     userStore: null,
     actions: null,
+    lastRepair: "not run",
   };
 
   const C = {
@@ -24,7 +24,10 @@
     muted: "#b5bac1",
     brand: "#5865f2",
     green: "#23a55a",
+    red: "#f23f43",
   };
+
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   function toast(text) {
     try { V.ui?.toasts?.showToast?.(String(text)); } catch {}
@@ -39,8 +42,6 @@
   }
 
   function resolveRuntime() {
-    // Called only while the user is already inside this settings page or taps
-    // an account. Nothing here runs during Discord/Shiggy startup.
     runtime.multiAccountStore ??= (
       findStore("MultiAccountStore")
       ?? find("getUsers", "getValidUsers", "getHasLoggedInAccounts")
@@ -52,7 +53,6 @@
       ?? find("switchAccount", "removeAccount")
       ?? find("switchAccount")
     );
-
     return runtime;
   }
 
@@ -62,14 +62,81 @@
     catch { return ""; }
   }
 
+  // Discord's StartupData.native.tsx writes this exact native value whenever
+  // AuthenticationStore changes. We access the native module directly so this
+  // repair does not require another Metro scan/finder.
+  function nativeAppDatabase() {
+    try {
+      const direct = globalThis.nativeModuleProxy?.NativeAppDatabaseModule;
+      if (direct) return direct;
+    } catch {}
+
+    try {
+      if (typeof globalThis.__turboModuleProxy === "function") {
+        return globalThis.__turboModuleProxy("NativeAppDatabaseModule") ?? null;
+      }
+    } catch {}
+
+    return null;
+  }
+
+  function startupUserId() {
+    try {
+      const value = nativeAppDatabase()?.getConstants?.()?.userId;
+      return value == null ? "" : String(value);
+    } catch {
+      return "";
+    }
+  }
+
+  async function writeStartupUserId(id) {
+    const mod = nativeAppDatabase();
+    if (typeof mod?.setUserId !== "function") return false;
+    await Promise.resolve(mod.setUserId(String(id)));
+    return true;
+  }
+
+  async function repairStartupIdentityWhenReady(target) {
+    const wanted = String(target);
+    const deadline = Date.now() + 18000;
+
+    // Never write the target ID until Discord itself reports that account as
+    // current. This avoids leaving native startup data pointing at a failed switch.
+    while (Date.now() < deadline) {
+      if (currentId() === wanted) {
+        try {
+          if (!await writeStartupUserId(wanted)) {
+            runtime.lastRepair = "native database module unavailable";
+            return false;
+          }
+
+          // Repeat after Discord's own account-switch/database callbacks settle.
+          // This guards against a late stale write without touching cache/data.
+          await sleep(1000);
+          if (currentId() === wanted) await writeStartupUserId(wanted);
+          await sleep(2500);
+          if (currentId() === wanted) await writeStartupUserId(wanted);
+
+          runtime.lastRepair = `synced:${wanted}`;
+          return true;
+        } catch (error) {
+          runtime.lastRepair = `repair error:${error?.message ?? error}`;
+          return false;
+        }
+      }
+      await sleep(250);
+    }
+
+    runtime.lastRepair = "new account never became current";
+    return false;
+  }
+
   function normalizeAccount(entry) {
     const base = entry?.user ?? entry;
     if (!base?.id) return null;
 
     let user = base;
-    try {
-      user = runtime.userStore?.getUser?.(String(base.id)) ?? base;
-    } catch {}
+    try { user = runtime.userStore?.getUser?.(String(base.id)) ?? base; } catch {}
 
     return {
       id: String(base.id),
@@ -99,7 +166,6 @@
           : raw && typeof raw === "object"
             ? Object.values(raw)
             : [];
-
         for (const entry of list) {
           const account = normalizeAccount(entry);
           if (account) found.push(account);
@@ -121,20 +187,19 @@
       });
   }
 
-  async function switchAccountAsync(id) {
+  async function switchAccount(id) {
     resolveRuntime();
     const target = String(id ?? "");
-    if (!target || target === currentId()) return;
+    if (!target || target === currentId()) return true;
 
     const fn = runtime.actions?.switchAccount;
-    if (typeof fn !== "function") {
-      throw new Error("Discord's multi-account switch action was not found");
-    }
+    if (typeof fn !== "function") throw new Error("Discord's multi-account switch action was not found");
 
-    // Discord's own Manage Accounts screen passes undefined here, which its
-    // auth layer defaults to synchronous=true. This build deliberately passes
-    // false so we can test the non-synchronous account transition instead.
+    // Keep the same non-synchronous path from v1.7 so this test changes only
+    // one variable: repairing Discord's persisted startup database identity.
+    const repair = repairStartupIdentityWhenReady(target);
     await Promise.resolve(fn(target, false));
+    return await repair;
   }
 
   function Settings() {
@@ -143,6 +208,7 @@
 
     const accounts = accountList();
     const active = currentId();
+    const startup = startupUserId();
     const canSwitch = typeof runtime.actions?.switchAccount === "function";
     const Pressable = RN.Pressable ?? RN.TouchableOpacity;
 
@@ -158,7 +224,16 @@
         React.createElement(RN.Text, {
           key: "desc",
           style: { color: C.muted, marginTop: 6, fontSize: 12, lineHeight: 17 },
-        }, "Experimental async-switch build. Uses Discord's saved accounts but bypasses the native Manage Accounts switch button and explicitly requests a non-synchronous account transition."),
+        }, "Startup-repair test. After Discord confirms the new account is active, this build re-syncs the same native startup database user ID that Discord's own DatabaseManager is supposed to persist."),
+        React.createElement(RN.Text, {
+          key: "diag",
+          style: {
+            color: !startup || startup === active ? C.green : C.red,
+            marginTop: 8,
+            fontSize: 12,
+            lineHeight: 17,
+          },
+        }, `Current: ${active || "unknown"}\nStartup DB: ${startup || "unknown"}\nRepair: ${runtime.lastRepair}`),
       ]),
       React.createElement(RN.Text, {
         key: "accounts-title",
@@ -172,7 +247,7 @@
         style: { backgroundColor: C.card2, padding: 13, borderRadius: 10 },
       }, React.createElement(RN.Text, {
         style: { color: C.muted, fontSize: 13, lineHeight: 18 },
-      }, "No saved Discord accounts were found. This test build intentionally does not open Discord's native account manager because its normal switch path is what we are isolating.")));
+      }, "No saved Discord accounts were found.")));
     } else {
       for (const account of accounts) {
         const isCurrent = account.id === active;
@@ -184,7 +259,8 @@
           onPress: async () => {
             setSwitching(account.id);
             try {
-              await switchAccountAsync(account.id);
+              const repaired = await switchAccount(account.id);
+              if (!repaired) toast(`Switched, but startup repair was not confirmed: ${runtime.lastRepair}`);
             } catch (error) {
               toast(`Account switch failed: ${error?.message ?? error}`);
               setSwitching("");
