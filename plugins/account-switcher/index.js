@@ -4,16 +4,18 @@
   const V = vendetta;
   if (!V?.metro?.common) return {};
 
+  const B = globalThis.bunny ?? globalThis.window?.bunny;
   const { React, ReactNative: RN } = V.metro.common;
-  const VERSION = "1.9.0-shiggy";
+  const VERSION = "2.0.0-shiggy";
+  const METRO_CACHE_PATH = "caches/metro_modules.json";
 
-  // Deliberately inert at startup. Discord modules/native state are resolved
-  // only after the user opens this settings page or taps an account.
+  // Deliberately inert at startup. Everything below runs only while the user is
+  // inside this settings page or after they explicitly request an account switch.
   const runtime = {
     multiAccountStore: null,
     userStore: null,
     actions: null,
-    lastFastConnectRepair: "not run",
+    cacheStatus: "not run",
   };
 
   const C = {
@@ -61,61 +63,59 @@
     catch { return ""; }
   }
 
-  function fastConnectModule() {
-    try {
-      const direct = globalThis.nativeModuleProxy?.NativeFastConnectModule;
-      if (direct) return direct;
-    } catch {}
-
-    try {
-      if (typeof globalThis.__turboModuleProxy === "function") {
-        return globalThis.__turboModuleProxy("NativeFastConnectModule") ?? null;
-      }
-    } catch {}
-
-    return null;
+  function cacheRemover() {
+    const fn = B?.api?.native?.fs?.removeFile;
+    return typeof fn === "function" ? fn : null;
   }
 
-  async function setFastConnectClientState(id) {
-    const mod = fastConnectModule();
-    if (typeof mod?.setClientState !== "function") return false;
+  async function removeMetroCache() {
+    const removeFile = cacheRemover();
+    if (!removeFile) {
+      runtime.cacheStatus = "Shiggy fs API unavailable";
+      return false;
+    }
 
-    // Discord's own ClientStateStoreStorage passes undefined when no user ID
-    // exists and a string ID when authenticated.
-    await Promise.resolve(mod.setClientState(id == null ? undefined : String(id), undefined));
-    return true;
+    try {
+      await removeFile(METRO_CACHE_PATH);
+      runtime.cacheStatus = "deleted";
+      return true;
+    } catch (error) {
+      runtime.cacheStatus = `delete error:${error?.message ?? error}`;
+      return false;
+    }
   }
 
-  async function repairFastConnectWhenReady(target) {
+  async function clearMetroCacheWhenReady(target) {
     const wanted = String(target);
     const deadline = Date.now() + 18000;
 
     while (Date.now() < deadline) {
       if (currentId() === wanted) {
-        try {
-          if (!await setFastConnectClientState(wanted)) {
-            runtime.lastFastConnectRepair = "native Fast Connect module unavailable";
-            return false;
-          }
+        // Give Discord's account transition time to finish causing any normal
+        // module lookups. Shiggy's Metro cache writer is debounced by 1 second,
+        // so repeated deletes spaced beyond that window prevent a pending write
+        // from simply recreating the file immediately after our first delete.
+        await sleep(3000);
 
-          // Repeat after Discord's auth/gateway callbacks settle so a stale late
-          // callback cannot leave the previous identity persisted for next boot.
-          await sleep(1000);
-          if (currentId() === wanted) await setFastConnectClientState(wanted);
-          await sleep(2500);
-          if (currentId() === wanted) await setFastConnectClientState(wanted);
-
-          runtime.lastFastConnectRepair = `synced:${wanted}`;
-          return true;
-        } catch (error) {
-          runtime.lastFastConnectRepair = `repair error:${error?.message ?? error}`;
-          return false;
+        let ok = false;
+        for (let i = 0; i < 4; i++) {
+          ok = await removeMetroCache() || ok;
+          if (i < 3) await sleep(1250);
         }
+
+        if (ok) {
+          runtime.cacheStatus = "cleared after switch";
+          toast("Shiggy Metro cache cleared — force-close now");
+        } else {
+          toast(`Metro cache cleanup failed: ${runtime.cacheStatus}`);
+        }
+        return ok;
       }
       await sleep(250);
     }
 
-    runtime.lastFastConnectRepair = "new account never became current";
+    runtime.cacheStatus = "new account never became current";
+    toast("Account switched, but Metro cache cleanup never saw the new account");
     return false;
   }
 
@@ -186,18 +186,13 @@
       throw new Error("Discord's multi-account switch action was not found");
     }
 
-    // Clear the persisted Fast Connect client identity before Discord tears down
-    // the old account, then restore it only after Discord confirms the new user.
-    try {
-      const cleared = await setFastConnectClientState(null);
-      runtime.lastFastConnectRepair = cleared ? "cleared before switch" : "native Fast Connect module unavailable";
-    } catch (error) {
-      runtime.lastFastConnectRepair = `pre-clear error:${error?.message ?? error}`;
-    }
+    runtime.cacheStatus = "waiting for new account";
+    const cleanup = clearMetroCacheWhenReady(target);
 
-    const repair = repairFastConnectWhenReady(target);
+    // Keep the same plain non-synchronous Discord switch from the earlier
+    // isolation build. v2.0 changes one thing: Shiggy's persisted Metro cache.
     await Promise.resolve(fn(target, false));
-    return await repair;
+    return await cleanup;
   }
 
   function Settings() {
@@ -207,7 +202,7 @@
     const accounts = accountList();
     const active = currentId();
     const canSwitch = typeof runtime.actions?.switchAccount === "function";
-    const hasFastConnect = typeof fastConnectModule()?.setClientState === "function";
+    const hasCacheApi = !!cacheRemover();
     const Pressable = RN.Pressable ?? RN.TouchableOpacity;
 
     const children = [
@@ -222,16 +217,16 @@
         React.createElement(RN.Text, {
           key: "desc",
           style: { color: C.muted, marginTop: 6, fontSize: 12, lineHeight: 17 },
-        }, "Fast Connect repair test. Clears Discord's native Fast Connect client identity before switching, then re-syncs it after the new account becomes active."),
+        }, "Metro-cache isolation build. After the new account becomes active, this removes ShiggyCord's persisted Metro finder cache before the next cold launch."),
         React.createElement(RN.Text, {
           key: "diag",
           style: {
-            color: hasFastConnect ? C.green : C.red,
+            color: hasCacheApi ? C.green : C.red,
             marginTop: 8,
             fontSize: 12,
             lineHeight: 17,
           },
-        }, `Current: ${active || "unknown"}\nFast Connect: ${hasFastConnect ? "available" : "unavailable"}\nRepair: ${runtime.lastFastConnectRepair}`),
+        }, `Current: ${active || "unknown"}\nMetro cache API: ${hasCacheApi ? "available" : "unavailable"}\nCleanup: ${runtime.cacheStatus}`),
       ]),
       React.createElement(RN.Text, {
         key: "accounts-title",
@@ -257,8 +252,7 @@
           onPress: async () => {
             setSwitching(account.id);
             try {
-              const repaired = await switchAccount(account.id);
-              if (!repaired) toast(`Switched, but Fast Connect repair was not confirmed: ${runtime.lastFastConnectRepair}`);
+              await switchAccount(account.id);
             } catch (error) {
               toast(`Account switch failed: ${error?.message ?? error}`);
               setSwitching("");
@@ -283,6 +277,26 @@
         ]));
       }
     }
+
+    children.push(React.createElement(Pressable, {
+      key: "manual-cache",
+      disabled: !hasCacheApi,
+      onPress: async () => {
+        const ok = await removeMetroCache();
+        toast(ok ? "Shiggy Metro cache cleared" : `Metro cache cleanup failed: ${runtime.cacheStatus}`);
+        refresh();
+      },
+      style: {
+        backgroundColor: C.card2,
+        paddingHorizontal: 14,
+        paddingVertical: 11,
+        borderRadius: 9,
+        alignItems: "center",
+        opacity: hasCacheApi ? 1 : 0.5,
+      },
+    }, React.createElement(RN.Text, {
+      style: { color: C.text, fontWeight: "700", fontSize: 14 },
+    }, "Clear Shiggy Metro Cache Now")));
 
     children.push(React.createElement(Pressable, {
       key: "refresh",
