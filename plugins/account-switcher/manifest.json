@@ -1,13 +1,13 @@
 {
   "name": "Account Switcher",
-  "description": "Minimal ShiggyCord account switcher using Discord's existing saved accounts and native switch action. No startup hooks, cache manipulation, or settings injection.",
+  "description": "ShiggyCord account switcher with active-account-only notification filtering for Discord and Android push notifications.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "282923b888267091368fb54110da95ac7fec80f5",
+  "hash": "4ee2697571f023d56630417c0221fcf4b04971f2",
   "vendetta": {
     "icon": "UserIcon"
   }
