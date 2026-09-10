@@ -1,13 +1,13 @@
 {
   "name": "Account Switcher",
-  "description": "ShiggyCord account switcher using Discord's saved accounts with an explicitly non-synchronous switch path. No startup hooks, settings injection, capability patch, or notification override.",
+  "description": "ShiggyCord account switcher with post-switch native startup database identity repair. No startup hooks or settings injection.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "9df7997dcd2bb2fa1ef8043434f42bc1cff45bae",
+  "hash": "b5ea77d2e8f4d694eb8bf321f2d2b7d5de6c206a",
   "vendetta": {
     "icon": "UserIcon"
   }
