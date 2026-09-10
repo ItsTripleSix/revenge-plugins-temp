@@ -5,15 +5,15 @@
   if (!V?.metro?.common) return {};
 
   const { React, ReactNative: RN } = V.metro.common;
-  const VERSION = "1.8.0-shiggy";
+  const VERSION = "1.9.0-shiggy";
 
-  // Nothing account-related runs at plugin startup. All Discord/native state is
-  // resolved only after the user opens this settings page.
+  // Deliberately inert at startup. Discord modules/native state are resolved
+  // only after the user opens this settings page or taps an account.
   const runtime = {
     multiAccountStore: null,
     userStore: null,
     actions: null,
-    lastRepair: "not run",
+    lastFastConnectRepair: "not run",
   };
 
   const C = {
@@ -22,7 +22,6 @@
     card2: "#2b2d31",
     text: "#f2f3f5",
     muted: "#b5bac1",
-    brand: "#5865f2",
     green: "#23a55a",
     red: "#f23f43",
   };
@@ -62,72 +61,61 @@
     catch { return ""; }
   }
 
-  // Discord's StartupData.native.tsx writes this exact native value whenever
-  // AuthenticationStore changes. We access the native module directly so this
-  // repair does not require another Metro scan/finder.
-  function nativeAppDatabase() {
+  function fastConnectModule() {
     try {
-      const direct = globalThis.nativeModuleProxy?.NativeAppDatabaseModule;
+      const direct = globalThis.nativeModuleProxy?.NativeFastConnectModule;
       if (direct) return direct;
     } catch {}
 
     try {
       if (typeof globalThis.__turboModuleProxy === "function") {
-        return globalThis.__turboModuleProxy("NativeAppDatabaseModule") ?? null;
+        return globalThis.__turboModuleProxy("NativeFastConnectModule") ?? null;
       }
     } catch {}
 
     return null;
   }
 
-  function startupUserId() {
-    try {
-      const value = nativeAppDatabase()?.getConstants?.()?.userId;
-      return value == null ? "" : String(value);
-    } catch {
-      return "";
-    }
-  }
+  async function setFastConnectClientState(id) {
+    const mod = fastConnectModule();
+    if (typeof mod?.setClientState !== "function") return false;
 
-  async function writeStartupUserId(id) {
-    const mod = nativeAppDatabase();
-    if (typeof mod?.setUserId !== "function") return false;
-    await Promise.resolve(mod.setUserId(String(id)));
+    // Discord's own ClientStateStoreStorage passes undefined when no user ID
+    // exists and a string ID when authenticated.
+    await Promise.resolve(mod.setClientState(id == null ? undefined : String(id), undefined));
     return true;
   }
 
-  async function repairStartupIdentityWhenReady(target) {
+  async function repairFastConnectWhenReady(target) {
     const wanted = String(target);
     const deadline = Date.now() + 18000;
 
-    // Never write the target ID until Discord itself reports that account as
-    // current. This avoids leaving native startup data pointing at a failed switch.
     while (Date.now() < deadline) {
       if (currentId() === wanted) {
         try {
-          if (!await writeStartupUserId(wanted)) {
-            runtime.lastRepair = "native database module unavailable";
+          if (!await setFastConnectClientState(wanted)) {
+            runtime.lastFastConnectRepair = "native Fast Connect module unavailable";
             return false;
           }
 
-          // Repeat after Discord's own account-switch/database callbacks settle.
-          // This guards against a late stale write without touching cache/data.
+          // Repeat after Discord's auth/gateway callbacks settle so a stale late
+          // callback cannot leave the previous identity persisted for next boot.
           await sleep(1000);
-          if (currentId() === wanted) await writeStartupUserId(wanted);
+          if (currentId() === wanted) await setFastConnectClientState(wanted);
           await sleep(2500);
-          if (currentId() === wanted) await writeStartupUserId(wanted);
+          if (currentId() === wanted) await setFastConnectClientState(wanted);
 
-          runtime.lastRepair = `synced:${wanted}`;
+          runtime.lastFastConnectRepair = `synced:${wanted}`;
           return true;
         } catch (error) {
-          runtime.lastRepair = `repair error:${error?.message ?? error}`;
+          runtime.lastFastConnectRepair = `repair error:${error?.message ?? error}`;
           return false;
         }
       }
       await sleep(250);
     }
 
-    runtime.lastRepair = "new account never became current";
+    runtime.lastFastConnectRepair = "new account never became current";
     return false;
   }
 
@@ -166,6 +154,7 @@
           : raw && typeof raw === "object"
             ? Object.values(raw)
             : [];
+
         for (const entry of list) {
           const account = normalizeAccount(entry);
           if (account) found.push(account);
@@ -193,11 +182,20 @@
     if (!target || target === currentId()) return true;
 
     const fn = runtime.actions?.switchAccount;
-    if (typeof fn !== "function") throw new Error("Discord's multi-account switch action was not found");
+    if (typeof fn !== "function") {
+      throw new Error("Discord's multi-account switch action was not found");
+    }
 
-    // Keep the same non-synchronous path from v1.7 so this test changes only
-    // one variable: repairing Discord's persisted startup database identity.
-    const repair = repairStartupIdentityWhenReady(target);
+    // Clear the persisted Fast Connect client identity before Discord tears down
+    // the old account, then restore it only after Discord confirms the new user.
+    try {
+      const cleared = await setFastConnectClientState(null);
+      runtime.lastFastConnectRepair = cleared ? "cleared before switch" : "native Fast Connect module unavailable";
+    } catch (error) {
+      runtime.lastFastConnectRepair = `pre-clear error:${error?.message ?? error}`;
+    }
+
+    const repair = repairFastConnectWhenReady(target);
     await Promise.resolve(fn(target, false));
     return await repair;
   }
@@ -208,8 +206,8 @@
 
     const accounts = accountList();
     const active = currentId();
-    const startup = startupUserId();
     const canSwitch = typeof runtime.actions?.switchAccount === "function";
+    const hasFastConnect = typeof fastConnectModule()?.setClientState === "function";
     const Pressable = RN.Pressable ?? RN.TouchableOpacity;
 
     const children = [
@@ -224,16 +222,16 @@
         React.createElement(RN.Text, {
           key: "desc",
           style: { color: C.muted, marginTop: 6, fontSize: 12, lineHeight: 17 },
-        }, "Startup-repair test. After Discord confirms the new account is active, this build re-syncs the same native startup database user ID that Discord's own DatabaseManager is supposed to persist."),
+        }, "Fast Connect repair test. Clears Discord's native Fast Connect client identity before switching, then re-syncs it after the new account becomes active."),
         React.createElement(RN.Text, {
           key: "diag",
           style: {
-            color: !startup || startup === active ? C.green : C.red,
+            color: hasFastConnect ? C.green : C.red,
             marginTop: 8,
             fontSize: 12,
             lineHeight: 17,
           },
-        }, `Current: ${active || "unknown"}\nStartup DB: ${startup || "unknown"}\nRepair: ${runtime.lastRepair}`),
+        }, `Current: ${active || "unknown"}\nFast Connect: ${hasFastConnect ? "available" : "unavailable"}\nRepair: ${runtime.lastFastConnectRepair}`),
       ]),
       React.createElement(RN.Text, {
         key: "accounts-title",
@@ -260,7 +258,7 @@
             setSwitching(account.id);
             try {
               const repaired = await switchAccount(account.id);
-              if (!repaired) toast(`Switched, but startup repair was not confirmed: ${runtime.lastRepair}`);
+              if (!repaired) toast(`Switched, but Fast Connect repair was not confirmed: ${runtime.lastFastConnectRepair}`);
             } catch (error) {
               toast(`Account switch failed: ${error?.message ?? error}`);
               setSwitching("");
