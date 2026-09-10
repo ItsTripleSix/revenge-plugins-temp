@@ -1,13 +1,13 @@
 {
   "name": "Account Switcher",
-  "description": "ShiggyCord account switcher that clears Shiggy's persisted Metro finder cache after an account transition. No startup hooks or settings injection.",
+  "description": "Minimal ShiggyCord account switcher using Discord's existing saved accounts and native switch action. No startup hooks, cache manipulation, or settings injection.",
   "authors": [
     {
       "name": "ItsTripleSix"
     }
   ],
   "main": "index.js",
-  "hash": "af1814603288c49bce0b2036d94954612163b7a3",
+  "hash": "282923b888267091368fb54110da95ac7fec80f5",
   "vendetta": {
     "icon": "UserIcon"
   }
