@@ -8,7 +8,8 @@
   const Toasts = vendetta.ui?.toasts ?? findByProps("showToast");
   const Assets = vendetta.ui?.assets;
 
-  storage.lastResult ??= "No search-context test run yet.";
+  storage.lastResult ??= "No internal discovery search run yet.";
+  storage.searchTerm ??= "";
 
   function toast(text, iconName = "Small") {
     try {
@@ -42,8 +43,24 @@
     return [];
   }
 
-  async function runTest() {
-    storage.lastResult = `Guild: ${TARGET}\nRunning global-discovery context test...`;
+  function makeLoadId(DiscoveryUtils) {
+    try {
+      const id = DiscoveryUtils?.makeAnalyticsID?.();
+      if (id) return id;
+    } catch {}
+    return `${Date.now()}${Math.random().toString(16).slice(2)}`;
+  }
+
+  async function runInternalSearch() {
+    const term = String(storage.searchTerm ?? "").trim();
+    if (!term) {
+      storage.lastResult = "Enter the server name first, then tap Search Discord Discovery.";
+      return;
+    }
+
+    const HTTP =
+      findByProps("get", "post", "put", "patch", "delete") ??
+      findByProps("get", "post", "put", "patch", "del");
 
     const Discovery =
       findByProps("startLurking", "getDiscoverableGuild") ??
@@ -53,88 +70,86 @@
       findByProps("navigateToGuild", "makeAnalyticsID") ??
       findByProps("makeAnalyticsID");
 
-    const SearchStore =
-      findByProps("getGuild", "getGuildIds", "getIsFetching", "getTotal") ??
-      findByProps("getGuild", "getGuildIds");
-
     const lines = [
-      `Guild: ${TARGET}`,
+      `Target guild: ${TARGET}`,
+      `Search term: ${term}`,
       "",
-      `Discovery module: ${Discovery?.startLurking ? "FOUND" : "NOT FOUND"}`,
-      `Global discovery utils: ${DiscoveryUtils?.makeAnalyticsID ? "FOUND" : "NOT FOUND"}`,
-      `Search results store: ${SearchStore?.getGuild ? "FOUND" : "NOT FOUND"}`,
-      ""
+      "INTERNAL DISCOVERY SEARCH"
     ];
 
-    let cachedGuild = null;
+    if (!HTTP?.get) {
+      lines.push("Result: unavailable — Discord HTTP module not found.");
+      storage.lastResult = lines.join("\n");
+      return;
+    }
+
     try {
-      cachedGuild = SearchStore?.getGuild?.(TARGET) ?? null;
-    } catch {}
+      const query = `query=${encodeURIComponent(term)}&offset=0&limit=48`;
+      const response = await HTTP.get({
+        url: "/discoverable-guilds",
+        query,
+        oldFormErrors: true,
+        rejectWithError: true
+      });
+      const body = response?.body ?? response ?? {};
+      const guilds = Array.isArray(body?.guilds) ? body.guilds : [];
 
-    lines.push("SEARCH STORE CHECK");
-    if (cachedGuild) {
-      const features = featureList(cachedGuild);
-      lines.push("Target is PRESENT in Discord's current global discovery/search result cache.");
-      lines.push(`Name: ${cachedGuild?.name ?? "unknown"}`);
-      lines.push(`Features (${features.length}): ${features.length ? features.join(", ") : "(none returned)"}`);
-      lines.push(`DISCOVERABLE: ${features.includes("DISCOVERABLE") ? "YES" : "NO"}`);
-      lines.push(`PREVIEW_ENABLED: ${features.includes("PREVIEW_ENABLED") ? "YES" : "NO"}`);
-    } else {
-      lines.push("Target is NOT currently present in Discord's global discovery/search result cache.");
-      lines.push("Search for the server in Discord's normal server discovery first, then return here and run this test again.");
-    }
+      lines.push("Result: SUCCESS");
+      lines.push(`Returned guilds: ${guilds.length}`);
+      if (body?.total !== undefined) lines.push(`Total matches: ${body.total}`);
 
-    lines.push("");
-    lines.push("SEARCH-CONTEXT LURK TEST");
+      const target = guilds.find(g => String(g?.id) === TARGET);
+      if (target) {
+        const features = featureList(target);
+        lines.push("TARGET FOUND: YES");
+        lines.push(`Name: ${target?.name ?? "unknown"}`);
+        lines.push(`Features (${features.length}): ${features.length ? features.join(", ") : "(none returned)"}`);
+        lines.push(`DISCOVERABLE: ${features.includes("DISCOVERABLE") ? "YES" : "NO"}`);
+        lines.push(`PREVIEW_ENABLED: ${features.includes("PREVIEW_ENABLED") ? "YES" : "NO"}`);
 
-    if (!Discovery?.startLurking) {
-      lines.push("Result: unavailable — startLurking module not found.");
-    } else {
-      let loadId;
-      try {
-        loadId = DiscoveryUtils?.makeAnalyticsID?.();
-      } catch {}
-      loadId ||= `${Date.now()}${Math.random().toString(16).slice(2)}`;
+        lines.push("");
+        lines.push("SEARCH-RESULT LURK TEST");
 
-      lines.push(`Generated loadId: ${loadId}`);
-      lines.push("Note: Discord generates loadId client-side; it is analytics/search context, not an access token.");
-
-      const analyticsLocation = { page: "GLOBAL_DISCOVERY" };
-      const options = { loadId, shouldNavigate: false };
-
-      try {
-        if (DiscoveryUtils?.navigateToGuild) {
-          await DiscoveryUtils.navigateToGuild({
-            loadId,
-            guildId: TARGET,
-            index: 0,
-            categoryId: null,
-            analyticsLocation,
-            options: { shouldNavigate: false }
-          });
-          lines.push("Result: SUCCESS via Discord navigateToGuild search flow.");
+        if (!Discovery?.startLurking) {
+          lines.push("Result: unavailable — startLurking module not found.");
         } else {
-          await Discovery.startLurking(TARGET, analyticsLocation, options);
-          lines.push("Result: SUCCESS via startLurking with full search context.");
-        }
-      } catch (err) {
-        lines.push("Result: FAILED");
-        lines.push(...errorLines(err));
-      }
-    }
+          const loadId = makeLoadId(DiscoveryUtils);
+          const analyticsLocation = { page: "GLOBAL_DISCOVERY" };
 
-    lines.push("");
-    lines.push("INTERPRETATION");
-    if (cachedGuild) {
-      lines.push("Discord itself currently has this guild in its global discovery/search cache.");
-      lines.push("If the search-context lurk test still returns 10004 Unknown Guild, then being searchable does not make this guild lurkable for this account; Discord's membership/lurk backend is refusing it.");
-    } else {
-      lines.push("Run this again immediately after locating the server in Discord's own discovery search so we can prove whether the live search result cache contains it.");
+          try {
+            await Discovery.startLurking(
+              TARGET,
+              analyticsLocation,
+              { loadId, shouldNavigate: false }
+            );
+            lines.push("Result: SUCCESS");
+            lines.push("Discord accepted native startLurking after the guild was returned by discovery search.");
+          } catch (err) {
+            lines.push("Result: FAILED");
+            lines.push(...errorLines(err));
+          }
+        }
+      } else {
+        lines.push("TARGET FOUND: NO");
+        if (guilds.length) {
+          lines.push("First returned results:");
+          for (const g of guilds.slice(0, 10)) {
+            lines.push(`- ${g?.name ?? "unknown"} (${g?.id ?? "no id"})`);
+          }
+        }
+        lines.push("");
+        lines.push("Try the exact server name as it appears in Discord desktop Discovery.");
+      }
+    } catch (err) {
+      lines.push("Result: FAILED");
+      lines.push(...errorLines(err));
+      lines.push("");
+      lines.push("The request used Discord's current /discoverable-guilds endpoint.");
     }
 
     storage.lastResult = lines.join("\n");
-    console.log("GuildLurk Debug search-context result:\n" + storage.lastResult);
-    toast("Search-context lurk test complete.", "Check");
+    console.log("GuildLurk Debug internal discovery result:\n" + storage.lastResult);
+    toast("Internal discovery search complete.", "Check");
   }
 
   function Button({ label, onPress }) {
@@ -152,37 +167,79 @@
           marginBottom: 12
         }
       },
-      React.createElement(RN.Text, { style: { color: "#FFFFFF", fontWeight: "700" } }, label)
+      React.createElement(
+        RN.Text,
+        { style: { color: "#FFFFFF", fontWeight: "700" } },
+        label
+      )
     );
   }
 
   function Settings() {
     const [, refresh] = React.useReducer(x => x + 1, 0);
+    const [term, setTerm] = React.useState(String(storage.searchTerm ?? ""));
+
     return React.createElement(
       RN.ScrollView,
       { style: { flex: 1 }, contentContainerStyle: { padding: 16 } },
-      React.createElement(RN.Text, { style: { color: "#F2F3F5", fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "GuildLurk Search-Context Test"),
-      React.createElement(RN.Text, { style: { color: "#B5BAC1", lineHeight: 19, marginBottom: 12 } }, `Target: ${TARGET}\n\nFirst search for this server in Discord's normal server discovery/search. Once you can see it in the results, return here and run the test immediately.`),
+      React.createElement(
+        RN.Text,
+        { style: { color: "#F2F3F5", fontSize: 20, fontWeight: "700", marginBottom: 8 } },
+        "GuildLurk Internal Discovery Test"
+      ),
+      React.createElement(
+        RN.Text,
+        { style: { color: "#B5BAC1", lineHeight: 19, marginBottom: 12 } },
+        `Target: ${TARGET}\n\nDiscord mobile currently does not expose server-name search. Enter the server's exact name here and this plugin will query Discord's discovery endpoint directly.`
+      ),
+      React.createElement(RN.TextInput, {
+        value: term,
+        placeholder: "Exact server name",
+        placeholderTextColor: "#6D6F78",
+        autoCapitalize: "none",
+        autoCorrect: false,
+        onChangeText: value => {
+          setTerm(value);
+          storage.searchTerm = value;
+        },
+        style: {
+          color: "#F2F3F5",
+          backgroundColor: "#1E1F22",
+          minHeight: 44,
+          borderRadius: 8,
+          paddingHorizontal: 12,
+          marginBottom: 12
+        }
+      }),
       React.createElement(Button, {
-        label: "Run Search-Context Test",
+        label: "Search Discord Discovery",
         onPress: async () => {
-          await runTest();
+          storage.searchTerm = term;
+          await runInternalSearch();
           refresh();
         }
       }),
-      React.createElement(RN.Text, { style: { color: "#F2F3F5", fontSize: 16, fontWeight: "700", marginBottom: 6 } }, "Last Result"),
-      React.createElement(RN.Text, {
-        selectable: true,
-        style: {
-          color: "#DCDDDE",
-          backgroundColor: "#111214",
-          padding: 12,
-          borderRadius: 8,
-          fontSize: 12,
-          lineHeight: 17,
-          fontFamily: "monospace"
-        }
-      }, String(storage.lastResult))
+      React.createElement(
+        RN.Text,
+        { style: { color: "#F2F3F5", fontSize: 16, fontWeight: "700", marginBottom: 6 } },
+        "Last Result"
+      ),
+      React.createElement(
+        RN.Text,
+        {
+          selectable: true,
+          style: {
+            color: "#DCDDDE",
+            backgroundColor: "#111214",
+            padding: 12,
+            borderRadius: 8,
+            fontSize: 12,
+            lineHeight: 17,
+            fontFamily: "monospace"
+          }
+        },
+        String(storage.lastResult)
+      )
     );
   }
 
