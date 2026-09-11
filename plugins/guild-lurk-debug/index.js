@@ -8,8 +8,7 @@
   const Toasts = vendetta.ui?.toasts ?? findByProps("showToast");
   const Assets = vendetta.ui?.assets;
 
-  storage.lastResult ??= "No internal discovery search run yet.";
-  storage.searchTerm ??= "";
+  storage.lastResult ??= "No ID-resolution test run yet.";
 
   function toast(text, iconName = "Small") {
     try {
@@ -36,28 +35,14 @@
     return lines;
   }
 
-  function featureList(guild) {
+  function featuresOf(guild) {
     const raw = guild?.features;
     if (Array.isArray(raw)) return raw;
     if (raw instanceof Set) return Array.from(raw);
     return [];
   }
 
-  function makeLoadId(DiscoveryUtils) {
-    try {
-      const id = DiscoveryUtils?.makeAnalyticsID?.();
-      if (id) return id;
-    } catch {}
-    return `${Date.now()}${Math.random().toString(16).slice(2)}`;
-  }
-
-  async function runInternalSearch() {
-    const term = String(storage.searchTerm ?? "").trim();
-    if (!term) {
-      storage.lastResult = "Enter the server name first, then tap Search Discord Discovery.";
-      return;
-    }
-
+  async function resolveById() {
     const HTTP =
       findByProps("get", "post", "put", "patch", "delete") ??
       findByProps("get", "post", "put", "patch", "del");
@@ -66,90 +51,90 @@
       findByProps("startLurking", "getDiscoverableGuild") ??
       findByProps("startLurking");
 
-    const DiscoveryUtils =
-      findByProps("navigateToGuild", "makeAnalyticsID") ??
-      findByProps("makeAnalyticsID");
-
     const lines = [
-      `Target guild: ${TARGET}`,
-      `Search term: ${term}`,
+      `Guild: ${TARGET}`,
       "",
-      "INTERNAL DISCOVERY SEARCH"
+      "RESOLVE NAME BY ID"
     ];
 
-    if (!HTTP?.get) {
-      lines.push("Result: unavailable — Discord HTTP module not found.");
-      storage.lastResult = lines.join("\n");
-      return;
+    let resolved = null;
+
+    if (Discovery?.getDiscoverableGuild) {
+      try {
+        const result = await Discovery.getDiscoverableGuild([TARGET]);
+        if (result) {
+          resolved = result;
+          lines.push("Native discovery lookup: SUCCESS");
+        } else {
+          lines.push("Native discovery lookup: no result");
+        }
+      } catch (err) {
+        lines.push("Native discovery lookup: FAILED");
+        lines.push(...errorLines(err));
+      }
+    } else {
+      lines.push("Native discovery lookup: unavailable");
     }
 
-    try {
-      const query = `query=${encodeURIComponent(term)}&offset=0&limit=48`;
-      const response = await HTTP.get({
-        url: "/discoverable-guilds",
-        query,
-        oldFormErrors: true,
-        rejectWithError: true
-      });
-      const body = response?.body ?? response ?? {};
-      const guilds = Array.isArray(body?.guilds) ? body.guilds : [];
-
-      lines.push("Result: SUCCESS");
-      lines.push(`Returned guilds: ${guilds.length}`);
-      if (body?.total !== undefined) lines.push(`Total matches: ${body.total}`);
-
-      const target = guilds.find(g => String(g?.id) === TARGET);
-      if (target) {
-        const features = featureList(target);
-        lines.push("TARGET FOUND: YES");
-        lines.push(`Name: ${target?.name ?? "unknown"}`);
-        lines.push(`Features (${features.length}): ${features.length ? features.join(", ") : "(none returned)"}`);
-        lines.push(`DISCOVERABLE: ${features.includes("DISCOVERABLE") ? "YES" : "NO"}`);
-        lines.push(`PREVIEW_ENABLED: ${features.includes("PREVIEW_ENABLED") ? "YES" : "NO"}`);
-
-        lines.push("");
-        lines.push("SEARCH-RESULT LURK TEST");
-
-        if (!Discovery?.startLurking) {
-          lines.push("Result: unavailable — startLurking module not found.");
+    if (!resolved && HTTP?.get) {
+      try {
+        const response = await HTTP.get({
+          url: `/guilds/${TARGET}/preview`,
+          oldFormErrors: true,
+          rejectWithError: true
+        });
+        const body = response?.body ?? response;
+        if (body?.id) {
+          resolved = body;
+          lines.push("Guild preview lookup: SUCCESS");
         } else {
-          const loadId = makeLoadId(DiscoveryUtils);
-          const analyticsLocation = { page: "GLOBAL_DISCOVERY" };
-
-          try {
-            await Discovery.startLurking(
-              TARGET,
-              analyticsLocation,
-              { loadId, shouldNavigate: false }
-            );
-            lines.push("Result: SUCCESS");
-            lines.push("Discord accepted native startLurking after the guild was returned by discovery search.");
-          } catch (err) {
-            lines.push("Result: FAILED");
-            lines.push(...errorLines(err));
-          }
+          lines.push("Guild preview lookup: no guild returned");
         }
-      } else {
-        lines.push("TARGET FOUND: NO");
-        if (guilds.length) {
-          lines.push("First returned results:");
-          for (const g of guilds.slice(0, 10)) {
-            lines.push(`- ${g?.name ?? "unknown"} (${g?.id ?? "no id"})`);
-          }
-        }
-        lines.push("");
-        lines.push("Try the exact server name as it appears in Discord desktop Discovery.");
+      } catch (err) {
+        lines.push("Guild preview lookup: FAILED");
+        lines.push(...errorLines(err));
       }
-    } catch (err) {
-      lines.push("Result: FAILED");
-      lines.push(...errorLines(err));
-      lines.push("");
-      lines.push("The request used Discord's current /discoverable-guilds endpoint.");
+    }
+
+    if (!resolved && HTTP?.get) {
+      try {
+        const response = await HTTP.get({
+          url: "/discoverable-guilds",
+          query: `guild_ids=${encodeURIComponent(TARGET)}`,
+          oldFormErrors: true,
+          rejectWithError: true
+        });
+        const body = response?.body ?? response ?? {};
+        const guilds = Array.isArray(body?.guilds) ? body.guilds : [];
+        const found = guilds.find(g => String(g?.id) === TARGET);
+        if (found) {
+          resolved = found;
+          lines.push("Direct /discoverable-guilds lookup: SUCCESS");
+        } else {
+          lines.push(`Direct /discoverable-guilds lookup: no target returned (${guilds.length} guilds)`);
+        }
+      } catch (err) {
+        lines.push("Direct /discoverable-guilds lookup: FAILED");
+        lines.push(...errorLines(err));
+      }
+    }
+
+    lines.push("");
+    if (resolved) {
+      const features = featuresOf(resolved);
+      lines.push("TARGET RESOLVED: YES");
+      lines.push(`Name: ${resolved?.name ?? "unknown"}`);
+      lines.push(`Features (${features.length}): ${features.length ? features.join(", ") : "(none returned)"}`);
+      lines.push(`DISCOVERABLE: ${features.includes("DISCOVERABLE") ? "YES" : "NO"}`);
+      lines.push(`PREVIEW_ENABLED: ${features.includes("PREVIEW_ENABLED") ? "YES" : "NO"}`);
+    } else {
+      lines.push("TARGET RESOLVED: NO");
+      lines.push("Discord did not expose a name for this guild through any tested discovery/preview path.");
     }
 
     storage.lastResult = lines.join("\n");
-    console.log("GuildLurk Debug internal discovery result:\n" + storage.lastResult);
-    toast("Internal discovery search complete.", "Check");
+    console.log("GuildLurk Debug ID resolution:\n" + storage.lastResult);
+    toast(resolved ? `Resolved: ${resolved?.name ?? TARGET}` : "Could not resolve guild name");
   }
 
   function Button({ label, onPress }) {
@@ -167,17 +152,12 @@
           marginBottom: 12
         }
       },
-      React.createElement(
-        RN.Text,
-        { style: { color: "#FFFFFF", fontWeight: "700" } },
-        label
-      )
+      React.createElement(RN.Text, { style: { color: "#FFFFFF", fontWeight: "700" } }, label)
     );
   }
 
   function Settings() {
     const [, refresh] = React.useReducer(x => x + 1, 0);
-    const [term, setTerm] = React.useState(String(storage.searchTerm ?? ""));
 
     return React.createElement(
       RN.ScrollView,
@@ -185,37 +165,17 @@
       React.createElement(
         RN.Text,
         { style: { color: "#F2F3F5", fontSize: 20, fontWeight: "700", marginBottom: 8 } },
-        "GuildLurk Internal Discovery Test"
+        "GuildLurk ID Resolver"
       ),
       React.createElement(
         RN.Text,
         { style: { color: "#B5BAC1", lineHeight: 19, marginBottom: 12 } },
-        `Target: ${TARGET}\n\nDiscord mobile currently does not expose server-name search. Enter the server's exact name here and this plugin will query Discord's discovery endpoint directly.`
+        `Target: ${TARGET}\n\nNo server name needed. This asks Discord directly for the guild metadata using the ID.`
       ),
-      React.createElement(RN.TextInput, {
-        value: term,
-        placeholder: "Exact server name",
-        placeholderTextColor: "#6D6F78",
-        autoCapitalize: "none",
-        autoCorrect: false,
-        onChangeText: value => {
-          setTerm(value);
-          storage.searchTerm = value;
-        },
-        style: {
-          color: "#F2F3F5",
-          backgroundColor: "#1E1F22",
-          minHeight: 44,
-          borderRadius: 8,
-          paddingHorizontal: 12,
-          marginBottom: 12
-        }
-      }),
       React.createElement(Button, {
-        label: "Search Discord Discovery",
+        label: "Resolve Server Name by ID",
         onPress: async () => {
-          storage.searchTerm = term;
-          await runInternalSearch();
+          await resolveById();
           refresh();
         }
       }),
