@@ -1,6 +1,6 @@
 {
   "name": "GuildLurk Debug",
-  "description": "ShiggyCord diagnostic build that exposes Discord lurk errors for guild 544293509494996998",
+  "description": "ShiggyCord diagnostic build that tests guild preview and lurk behavior for guild 544293509494996998",
   "authors": [
     {
       "name": "fshin",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "619244faa30803f6b3616a9eed24c52231e5c983",
+  "hash": "75618937e45904e4de2709da5c1215c2efdd8595",
   "vendetta": {
     "icon": "ic_eye_hidden"
   }
