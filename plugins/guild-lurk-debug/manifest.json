@@ -1,6 +1,6 @@
 {
   "name": "GuildLurk Debug",
-  "description": "ShiggyCord diagnostic build that compares Discord native startLurking with GuildLurk for guild 544293509494996998",
+  "description": "ShiggyCord diagnostic build that tests Discord global-discovery search context for guild 544293509494996998",
   "authors": [
     {
       "name": "fshin",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "b6642b07892edce045cc305e3ebd4e75007fdc35",
+  "hash": "9c1d72e2b9c4af9a3eb6f187ef4e52986a4187cd",
   "vendetta": {
     "icon": "ic_eye_hidden"
   }
