@@ -1,13 +1,14 @@
 {
   "name": "GuildLurk Debug",
-  "description": "Diagnostic build of GuildLurk that exposes Discord lurk errors",
+  "description": "ShiggyCord diagnostic build that exposes Discord lurk errors for guild 544293509494996998",
   "authors": [
     {
       "name": "fshin",
       "id": "1381008677301129257"
     }
   ],
-  "main": "src/index.ts",
+  "main": "index.js",
+  "hash": "619244faa30803f6b3616a9eed24c52231e5c983",
   "vendetta": {
     "icon": "ic_eye_hidden"
   }
