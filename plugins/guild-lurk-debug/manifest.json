@@ -1,6 +1,6 @@
 {
   "name": "GuildLurk Debug",
-  "description": "ShiggyCord diagnostic build with internal Discord server discovery search for guild 544293509494996998",
+  "description": "ShiggyCord diagnostic build that resolves and tests guild 544293509494996998 directly by ID",
   "authors": [
     {
       "name": "fshin",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "8d728167439e91ceeb4db9477b33e869348877b0",
+  "hash": "9ebdb315614acc7fdc83d42d114c6515d0d977a9",
   "vendetta": {
     "icon": "ic_eye_hidden"
   }
