@@ -202,6 +202,7 @@
           },
         });
 
+        // Discord reads getValidUsers synchronously before its first await.
         result = original(...args);
       } finally {
         try {
@@ -317,6 +318,8 @@
         runtime.pendingForce = false;
         result = await performSync(runForce);
 
+        // If mode/account/token changed while the request was running,
+        // do one final coalesced sync for the newest state.
         if (beforeKey !== desiredSyncKey()) runtime.pendingSync = true;
       }
       return result;
@@ -451,6 +454,8 @@
 
     await Promise.resolve(fn(target, undefined));
 
+    // Discord normally re-syncs push registration on POST_CONNECTION_OPEN.
+    // This is only a bounded repair path if that native sync never happens.
     if (storage.onlyActiveNotifications === true) armSwitchFallback(target);
   }
 
@@ -568,7 +573,8 @@
             padding: 13,
             borderRadius: 10,
             opacity: isCurrent ? 0.7 : 1,
-          }, [
+          },
+        }, [
           React.createElement(RN.Text, {
             key: "name",
             style: { color: C.text, fontSize: 15, fontWeight: "700" },
@@ -627,6 +633,7 @@
       if (runtime.startupTimer) clearTimeout(runtime.startupTimer);
       if (runtime.switchFallbackTimer) clearTimeout(runtime.switchFallbackTimer);
 
+      // Removing the plugin must not leave Discord registered in active-only mode.
       if (storage.onlyActiveNotifications === true) restoreDiscordNotifications();
       else uninstallPushPatch();
     },
