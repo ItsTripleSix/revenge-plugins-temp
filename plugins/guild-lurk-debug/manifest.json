@@ -1,6 +1,6 @@
 {
   "name": "GuildLurk Debug",
-  "description": "ShiggyCord diagnostic build that tests Discord global-discovery search context for guild 544293509494996998",
+  "description": "ShiggyCord diagnostic build with internal Discord server discovery search for guild 544293509494996998",
   "authors": [
     {
       "name": "fshin",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "9c1d72e2b9c4af9a3eb6f187ef4e52986a4187cd",
+  "hash": "8d728167439e91ceeb4db9477b33e869348877b0",
   "vendetta": {
     "icon": "ic_eye_hidden"
   }
