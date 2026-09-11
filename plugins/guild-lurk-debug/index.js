@@ -8,7 +8,7 @@
   const Toasts = vendetta.ui?.toasts ?? findByProps("showToast");
   const Assets = vendetta.ui?.assets;
 
-  storage.lastResult ??= "No ID-resolution test run yet.";
+  storage.lastResult ??= "No corrected ID-resolution test run yet.";
 
   function toast(text, iconName = "Small") {
     try {
@@ -42,6 +42,14 @@
     return [];
   }
 
+  function guildFromResponse(response) {
+    const body = response?.body ?? response ?? {};
+    if (body?.id) return body;
+    if (body?.guild?.id) return body.guild;
+    const guilds = Array.isArray(body?.guilds) ? body.guilds : [];
+    return guilds.find(g => String(g?.id) === TARGET) ?? null;
+  }
+
   async function resolveById() {
     const HTTP =
       findByProps("get", "post", "put", "patch", "delete") ??
@@ -54,68 +62,61 @@
     const lines = [
       `Guild: ${TARGET}`,
       "",
-      "RESOLVE NAME BY ID"
+      "CORRECTED RESOLVE NAME BY ID"
     ];
 
     let resolved = null;
 
     if (Discovery?.getDiscoverableGuild) {
-      try {
-        const result = await Discovery.getDiscoverableGuild([TARGET]);
-        if (result) {
-          resolved = result;
-          lines.push("Native discovery lookup: SUCCESS");
-        } else {
-          lines.push("Native discovery lookup: no result");
+      for (const [label, arg] of [
+        ["array", [TARGET]],
+        ["string", TARGET]
+      ]) {
+        if (resolved) break;
+        try {
+          const result = await Discovery.getDiscoverableGuild(arg);
+          if (result) {
+            resolved = result;
+            lines.push(`Native discovery lookup (${label}): SUCCESS`);
+          } else {
+            lines.push(`Native discovery lookup (${label}): no result`);
+          }
+        } catch (err) {
+          lines.push(`Native discovery lookup (${label}): FAILED`);
+          lines.push(...errorLines(err));
         }
-      } catch (err) {
-        lines.push("Native discovery lookup: FAILED");
-        lines.push(...errorLines(err));
       }
     } else {
       lines.push("Native discovery lookup: unavailable");
     }
 
-    if (!resolved && HTTP?.get) {
-      try {
-        const response = await HTTP.get({
-          url: `/guilds/${TARGET}/preview`,
-          oldFormErrors: true,
-          rejectWithError: true
-        });
-        const body = response?.body ?? response;
-        if (body?.id) {
-          resolved = body;
-          lines.push("Guild preview lookup: SUCCESS");
-        } else {
-          lines.push("Guild preview lookup: no guild returned");
-        }
-      } catch (err) {
-        lines.push("Guild preview lookup: FAILED");
-        lines.push(...errorLines(err));
-      }
-    }
+    if (!HTTP?.get) {
+      lines.push("Discord HTTP module: unavailable");
+    } else {
+      const attempts = [
+        ["Guild preview", `/guilds/${TARGET}/preview`],
+        ["Discovery guild_ids=ID", `/discoverable-guilds?guild_ids=${TARGET}`],
+        ["Discovery guild_ids[]=ID", `/discoverable-guilds?guild_ids%5B%5D=${TARGET}`],
+        ["Discovery guild_ids JSON array", `/discoverable-guilds?guild_ids=${encodeURIComponent(JSON.stringify([TARGET]))}`]
+      ];
 
-    if (!resolved && HTTP?.get) {
-      try {
-        const response = await HTTP.get({
-          url: "/discoverable-guilds",
-          query: `guild_ids=${encodeURIComponent(TARGET)}`,
-          oldFormErrors: true,
-          rejectWithError: true
-        });
-        const body = response?.body ?? response ?? {};
-        const guilds = Array.isArray(body?.guilds) ? body.guilds : [];
-        const found = guilds.find(g => String(g?.id) === TARGET);
-        if (found) {
-          resolved = found;
-          lines.push("Direct /discoverable-guilds lookup: SUCCESS");
-        } else {
-          lines.push(`Direct /discoverable-guilds lookup: no target returned (${guilds.length} guilds)`);
+      for (const [label, url] of attempts) {
+        if (resolved) break;
+        try {
+          const response = await HTTP.get(url);
+          const found = guildFromResponse(response);
+          if (found) {
+            resolved = found;
+            lines.push(`${label}: SUCCESS`);
+          } else {
+            const body = response?.body ?? response ?? {};
+            const count = Array.isArray(body?.guilds) ? body.guilds.length : 0;
+            lines.push(`${label}: request succeeded, target not returned (${count} guilds)`);
+          }
+        } catch (err) {
+          lines.push(`${label}: FAILED`);
+          lines.push(...errorLines(err));
         }
-      } catch (err) {
-        lines.push("Direct /discoverable-guilds lookup: FAILED");
-        lines.push(...errorLines(err));
       }
     }
 
@@ -129,12 +130,12 @@
       lines.push(`PREVIEW_ENABLED: ${features.includes("PREVIEW_ENABLED") ? "YES" : "NO"}`);
     } else {
       lines.push("TARGET RESOLVED: NO");
-      lines.push("Discord did not expose a name for this guild through any tested discovery/preview path.");
+      lines.push("All corrected string-URL lookups completed without resolving the guild.");
     }
 
     storage.lastResult = lines.join("\n");
-    console.log("GuildLurk Debug ID resolution:\n" + storage.lastResult);
-    toast(resolved ? `Resolved: ${resolved?.name ?? TARGET}` : "Could not resolve guild name");
+    console.log("GuildLurk Debug corrected ID resolution:\n" + storage.lastResult);
+    toast(resolved ? `Resolved: ${resolved?.name ?? TARGET}` : "Guild ID still unresolved");
   }
 
   function Button({ label, onPress }) {
@@ -170,10 +171,10 @@
       React.createElement(
         RN.Text,
         { style: { color: "#B5BAC1", lineHeight: 19, marginBottom: 12 } },
-        `Target: ${TARGET}\n\nNo server name needed. This asks Discord directly for the guild metadata using the ID.`
+        `Target: ${TARGET}\n\nCorrected for ShiggyCord's HTTP wrapper. The earlier object-form requests never reached Discord.`
       ),
       React.createElement(Button, {
-        label: "Resolve Server Name by ID",
+        label: "Run Corrected ID Test",
         onPress: async () => {
           await resolveById();
           refresh();
