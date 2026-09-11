@@ -39,59 +39,114 @@
     return lines;
   }
 
-  async function testPreview() {
-    const HTTP =
-      findByProps("get", "post", "put", "patch", "delete") ??
-      findByProps("get", "post", "put", "patch", "del");
-
-    if (!HTTP?.get) {
+  async function testDiscoveryLookup(Discovery) {
+    if (!Discovery?.getDiscoverableGuild) {
       return {
         ok: false,
         lines: [
-          "PREVIEW TEST",
+          "NATIVE DISCOVERY LOOKUP",
           "Result: unavailable",
-          "Message: Discord HTTP module not found"
+          "Message: getDiscoverableGuild not found"
+        ]
+      };
+    }
+
+    const attempts = [
+      ["string ID", TARGET],
+      ["ID array", [TARGET]]
+    ];
+
+    const failures = [];
+
+    for (const [label, value] of attempts) {
+      try {
+        const result = await Discovery.getDiscoverableGuild(value);
+        if (result) {
+          const featuresRaw = result?.features;
+          const features = Array.isArray(featuresRaw)
+            ? featuresRaw
+            : featuresRaw instanceof Set
+              ? Array.from(featuresRaw)
+              : [];
+          return {
+            ok: true,
+            result,
+            lines: [
+              "NATIVE DISCOVERY LOOKUP",
+              `Result: SUCCESS (${label})`,
+              `Guild ID: ${result?.id ?? "unknown"}`,
+              `Guild name: ${result?.name ?? "unknown"}`,
+              `Features (${features.length}): ${features.length ? features.join(", ") : "(none returned)"}`,
+              `DISCOVERABLE: ${features.includes("DISCOVERABLE") ? "YES" : "NO"}`,
+              `PREVIEW_ENABLED: ${features.includes("PREVIEW_ENABLED") ? "YES" : "NO"}`
+            ]
+          };
+        }
+        failures.push(`${label}: returned null/undefined`);
+      } catch (err) {
+        const msg =
+          err?.body?.message ??
+          err?.response?.body?.message ??
+          err?.message ??
+          String(err);
+        failures.push(`${label}: ${msg}`);
+      }
+    }
+
+    return {
+      ok: false,
+      lines: [
+        "NATIVE DISCOVERY LOOKUP",
+        "Result: FAILED",
+        ...failures
+      ]
+    };
+  }
+
+  async function testNativeLurk(Discovery) {
+    if (!Discovery?.startLurking) {
+      return {
+        ok: false,
+        lines: [
+          "NATIVE startLurking TEST",
+          "Result: unavailable",
+          "Message: startLurking not found"
         ]
       };
     }
 
     try {
-      const response = await HTTP.get(`/guilds/${TARGET}/preview`);
-      const body = response?.body ?? response ?? {};
-      const features = Array.isArray(body?.features) ? body.features : [];
+      const result = await Discovery.startLurking(
+        TARGET,
+        {},
+        { shouldNavigate: false }
+      );
 
       return {
         ok: true,
-        body,
+        result,
         lines: [
-          "PREVIEW TEST",
+          "NATIVE startLurking TEST",
           "Result: SUCCESS",
-          `HTTP status: ${response?.status ?? "unknown"}`,
-          `Guild ID: ${body?.id ?? "unknown"}`,
-          `Guild name: ${body?.name ?? "unknown"}`,
-          `Approx members: ${body?.approximate_member_count ?? "unknown"}`,
-          `Approx online: ${body?.approximate_presence_count ?? "unknown"}`,
-          `Features (${features.length}): ${features.length ? features.join(", ") : "(none returned)"}`,
-          `DISCOVERABLE: ${features.includes("DISCOVERABLE") ? "YES" : "NO"}`,
-          `PREVIEW_ENABLED: ${features.includes("PREVIEW_ENABLED") ? "YES" : "NO"}`
+          "Discord's own current lurk flow accepted the guild."
         ]
       };
     } catch (err) {
       return {
         ok: false,
         error: err,
-        lines: errorLines("PREVIEW TEST\nResult: FAILED", err)
+        lines: errorLines("NATIVE startLurking TEST\nResult: FAILED", err)
       };
     }
   }
 
-  async function testLurk() {
+  async function testOriginalGuildLurkCall() {
     const GuildActions = findByProps("joinGuild");
     if (!GuildActions?.joinGuild) {
       return {
         ok: false,
         lines: [
-          "LURK TEST",
+          "ORIGINAL GuildLurk CALL",
           "Result: unavailable",
           "Message: joinGuild module not found"
         ]
@@ -103,52 +158,73 @@
       return {
         ok: true,
         lines: [
-          "LURK TEST",
+          "ORIGINAL GuildLurk CALL",
           "Result: SUCCESS",
-          "Discord accepted the lurk request."
+          "joinGuild(id, { lurker: true }) succeeded."
         ]
       };
     } catch (err) {
       return {
         ok: false,
         error: err,
-        lines: errorLines("LURK TEST\nResult: FAILED", err)
+        lines: errorLines("ORIGINAL GuildLurk CALL\nResult: FAILED", err)
       };
     }
   }
 
   async function runDiagnostic() {
-    storage.lastResult = `Guild: ${TARGET}\nRunning preview test...`;
+    storage.lastResult = `Guild: ${TARGET}\nRunning native Discord lurk diagnostics...`;
 
-    const preview = await testPreview();
-    const lurk = await testLurk();
+    const Discovery =
+      findByProps("startLurking", "getDiscoverableGuild") ??
+      findByProps("startLurking");
 
-    const interpretation = [];
-    if (preview.ok && !lurk.ok) {
-      interpretation.push("INTERPRETATION");
-      interpretation.push("Preview endpoint works, but lurk membership request fails.");
-      if (preview.body?.features) {
-        const features = preview.body.features;
-        if (features.includes("DISCOVERABLE") && !features.includes("PREVIEW_ENABLED")) {
-          interpretation.push("Guild is DISCOVERABLE but PREVIEW_ENABLED is absent.");
-        } else if (features.includes("PREVIEW_ENABLED")) {
-          interpretation.push("PREVIEW_ENABLED is present, so the lurk failure is caused by something more specific than the preview flag.");
-        }
-      }
-    } else if (!preview.ok && !lurk.ok) {
-      interpretation.push("INTERPRETATION");
-      interpretation.push("Both preview and lurk requests failed for this guild/account.");
-    } else if (preview.ok && lurk.ok) {
-      interpretation.push("INTERPRETATION");
-      interpretation.push("Both preview and lurk requests succeeded.");
+    const discovery = await testDiscoveryLookup(Discovery);
+    const nativeLurk = await testNativeLurk(Discovery);
+    const original = await testOriginalGuildLurkCall();
+
+    const interpretation = ["INTERPRETATION"];
+
+    if (nativeLurk.ok && !original.ok) {
+      interpretation.push(
+        "Discord native startLurking works while GuildLurk's direct joinGuild call fails."
+      );
+      interpretation.push(
+        "Conclusion: the third-party GuildLurk implementation is outdated/incomplete for this guild."
+      );
+    } else if (!nativeLurk.ok && !original.ok) {
+      interpretation.push(
+        "Both Discord native startLurking and GuildLurk's direct call failed."
+      );
+      interpretation.push(
+        "Conclusion: this is not just GuildLurk's shortcut; Discord is rejecting lurk for this guild/account."
+      );
+    } else if (nativeLurk.ok && original.ok) {
+      interpretation.push("Both lurk paths succeeded.");
+    } else if (!nativeLurk.ok && original.ok) {
+      interpretation.push(
+        "The direct joinGuild shortcut succeeded while native startLurking failed; this is unusual and may indicate a changed internal module."
+      );
+    }
+
+    if (discovery.ok) {
+      interpretation.push("Discord's native discovery lookup can resolve the guild.");
+    } else {
+      interpretation.push(
+        "Discord's native discovery lookup could not resolve the guild with either tested argument shape."
+      );
     }
 
     const result = [
       `Guild: ${TARGET}`,
       "",
-      ...preview.lines,
+      `Discovery module found: ${Discovery?.startLurking ? "YES" : "NO"}`,
       "",
-      ...lurk.lines,
+      ...discovery.lines,
+      "",
+      ...nativeLurk.lines,
+      "",
+      ...original.lines,
       "",
       ...interpretation
     ].join("\n");
@@ -157,12 +233,12 @@
     storage.lastError = result;
     console.log("GuildLurk Debug result:\n" + result);
 
-    if (preview.ok && !lurk.ok) {
-      toast("Preview works; lurk still fails. Open GuildLurk Debug settings.");
-    } else if (!preview.ok) {
-      toast("Preview test failed. Open GuildLurk Debug settings.");
+    if (nativeLurk.ok && !original.ok) {
+      toast("Native lurk works: GuildLurk itself is the problem.", "Check");
+    } else if (!nativeLurk.ok && !original.ok) {
+      toast("Both lurk paths failed. Open GuildLurk Debug settings.");
     } else {
-      toast("GuildLurk diagnostic complete.", "Check");
+      toast("Native lurk diagnostic complete.", "Check");
     }
 
     return result;
@@ -182,7 +258,7 @@
       React.createElement(
         RN.Text,
         { style: { color: "#B5BAC1" } },
-        `Tests Discord's guild preview endpoint and lurk request for ${TARGET}.`
+        `Compares Discord's native startLurking flow against GuildLurk's direct joinGuild call for ${TARGET}.`
       ),
       React.createElement(
         RN.Pressable,
@@ -203,7 +279,7 @@
         React.createElement(
           RN.Text,
           { style: { color: "#FFFFFF", fontWeight: "700" } },
-          "Run Preview + Lurk Test"
+          "Run Native Lurk Test"
         )
       ),
       React.createElement(
@@ -231,9 +307,7 @@
   }
 
   return {
-    onLoad() {
-      setTimeout(runDiagnostic, 800);
-    },
+    onLoad() {},
     onUnload() {},
     settings: Settings
   };
