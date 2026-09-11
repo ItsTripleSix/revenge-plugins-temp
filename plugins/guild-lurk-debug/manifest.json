@@ -1,0 +1,14 @@
+{
+  "name": "GuildLurk Debug",
+  "description": "Diagnostic build of GuildLurk that exposes Discord lurk errors",
+  "authors": [
+    {
+      "name": "fshin",
+      "id": "1381008677301129257"
+    }
+  ],
+  "main": "src/index.ts",
+  "vendetta": {
+    "icon": "ic_eye_hidden"
+  }
+}
